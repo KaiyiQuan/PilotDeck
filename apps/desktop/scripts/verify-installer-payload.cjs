@@ -46,6 +46,25 @@ function inventory(root, prefix = '') {
     assert.deepEqual(inventory(target), inventory(source), 'failed extraction must not alter installed files');
     assert.ok(!fs.readdirSync(root).some(name => name.startsWith('.pilotdeck-install-')), 'clean failed extraction');
 
+    const state = path.join(root, 'payload.state');
+    const prepare = () => spawnSync(helper, [decoder, archive, target, '0', 'en', state], { windowsHide: true, encoding: 'utf8' });
+    const original = inventory(target);
+    assert.equal(prepare().status, 0);
+    assert.deepEqual(inventory(target), original, 'preparation never touches the old version');
+    assert.ok(fs.existsSync(state), 'prepared payload recorded');
+    assert.equal(spawnSync(helper, ['--discard', state], { windowsHide: true }).status, 0);
+    assert.deepEqual(inventory(target), original, 'discard preserves old version');
+    assert.ok(!fs.readdirSync(root).some(name => name.startsWith('.pilotdeck-install-')));
+    fs.writeFileSync(state + '.cancel', 'cancel');
+    assert.equal(prepare().status, 1223, 'cancel before extraction returns ERROR_CANCELLED');
+    assert.deepEqual(inventory(target), original);
+    fs.unlinkSync(state + '.cancel');
+    assert.equal(prepare().status, 0);
+    assert.equal(spawnSync(helper, ['--commit', state, '0', 'en'], { windowsHide: true }).status, 0);
+    assert.deepEqual(inventory(target), inventory(source));
+    assert.ok(!fs.existsSync(state));
+    assert.ok(!fs.readdirSync(root).some(name => name.startsWith('.pilotdeck-install-')));
+
     const compiler = path.join(process.env.WINDIR, 'Microsoft.NET', 'Framework64', 'v4.0.30319', 'csc.exe');
     const tests = path.join(root, 'transaction-tests.exe');
     execFileSync(compiler, ['/nologo', '/target:exe', '/main:InstallerTests', `/out:${tests}`,

@@ -18,14 +18,20 @@ internal static class InstallPayload
     [DllImport("user32.dll")] static extern IntPtr GetDlgItem(IntPtr parent, int id);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr SendMessage(IntPtr window, uint message, IntPtr wparam, string text);
     [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr window, uint message, IntPtr wparam, IntPtr lparam);
-    [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr window, int index);
-    [DllImport("user32.dll")] static extern int SetWindowLong(IntPtr window, int index, int value);
 
     static readonly Regex Percent = new Regex(@"(?:^|\s)(\d{1,3})%", RegexOptions.Compiled);
     static readonly object ProgressLock = new object();
     static int progress;
     static IntPtr owner, label, bar;
     static bool chinese;
+    static string cancelFile;
+    static int displayedProgress = -1;
+
+    static void CheckCancellation()
+    {
+        if ((cancelFile != null && File.Exists(cancelFile)) || (owner != IntPtr.Zero && !IsWindow(owner)))
+            throw new OperationCanceledException();
+    }
 
     static string Text(string en, string zh) { return chinese ? zh : en; }
 
@@ -41,17 +47,12 @@ internal static class InstallPayload
         Console.WriteLine(message);
         if (label == IntPtr.Zero) return;
         SendMessage(label, 0x000C, IntPtr.Zero, message); // WM_SETTEXT
-        if (percent.HasValue)
+        if (percent.HasValue && percent.Value > displayedProgress)
         {
-            SendMessage(bar, 0x040A, IntPtr.Zero, IntPtr.Zero); // PBM_SETMARQUEE off
-            SetWindowLong(bar, -16, GetWindowLong(bar, -16) & ~8);
-            SendMessage(bar, 0x0406, IntPtr.Zero, new IntPtr(30000)); // NSIS progress range
-            SendMessage(bar, 0x0402, new IntPtr(percent.Value * 300), IntPtr.Zero);
-        }
-        else
-        {
-            SetWindowLong(bar, -16, GetWindowLong(bar, -16) | 8); // PBS_MARQUEE
-            SendMessage(bar, 0x040A, new IntPtr(1), new IntPtr(40));
+            displayedProgress = Math.Max(percent.Value, SendMessage(bar, 0x0408, IntPtr.Zero, IntPtr.Zero).ToInt32() / 10);
+            // An independent control: NSIS's instruction counter still updates
+            // its hidden original bar. Never reset the range/style for a log.
+            SendMessage(bar, 0x0402, new IntPtr(displayedProgress * 10), IntPtr.Zero);
         }
     }
 
@@ -86,6 +87,7 @@ internal static class InstallPayload
 
     static void Extract(string decoder, string archive, string destination)
     {
+        CheckCancellation();
         progress = 0;
         var start = new ProcessStartInfo(decoder,
             "x -y -bsp1 -bso0 -bse2 -o" + Quote(destination) + " -- " + Quote(archive));
@@ -105,7 +107,7 @@ internal static class InstallPayload
             {
                 while (!worker.WaitForExit(200))
                 {
-                    if (owner != IntPtr.Zero && !IsWindow(owner)) throw new IOException("Installer closed during extraction");
+                    CheckCancellation();
                     int percent;
                     lock (ProgressLock) percent = progress;
                     double elapsed = clock.Elapsed.TotalSeconds;
@@ -117,12 +119,13 @@ internal static class InstallPayload
                         ? Text("about ", "解压预计剩余：") + TimeSpan.FromSeconds(eta.Value).ToString(@"hh\:mm\:ss") + Text(" remaining", "")
                         : Text("estimating remaining time...", "正在估算剩余时间……");
                     // The percentage describes extraction only, not finalization.
-                    Status(Text("Extracting files: ", "正在解压文件：") + Math.Min(percent, 99) + "% - " + remaining, Math.Min(percent, 99));
+                    Status(Text("Extracting files: ", "正在解压文件：") + Math.Min(percent, 99) + "% - " + remaining, percent * 90 / 100);
                 }
                 worker.WaitForExit();
                 output.GetAwaiter().GetResult();
                 string error = errors.GetAwaiter().GetResult();
                 if (worker.ExitCode != 0) throw new IOException("7-Zip extraction failed (" + worker.ExitCode + "): " + error);
+                CheckCancellation();
                 Console.WriteLine("Extraction completed in " + clock.Elapsed.TotalSeconds.ToString("F1", CultureInfo.InvariantCulture) + " s.");
             }
             finally
@@ -213,35 +216,85 @@ internal static class InstallPayload
     static int Main(string[] args)
     {
         string stage = null;
+        string stateFile = null;
+        bool prepared = false;
         bool committed = false;
         try
         {
-            if (args.Length != 5) throw new ArgumentException("Expected: decoder archive target window language");
-            string decoder = Path.GetFullPath(args[0]), archive = Path.GetFullPath(args[1]);
-            string target = Path.GetFullPath(args[2]).TrimEnd('\\', '/');
-            owner = new IntPtr(long.Parse(args[3], CultureInfo.InvariantCulture));
-            chinese = args[4] == "zh";
+            bool commitOnly = args.Length == 4 && args[0] == "--commit";
+            bool discard = args.Length == 2 && args[0] == "--discard";
+            bool prepareOnly = args.Length == 6;
+            if (!commitOnly && !discard && !prepareOnly && args.Length != 5)
+                throw new ArgumentException("Expected payload arguments, --commit state window language, or --discard state");
+            string target;
+            if (commitOnly || discard)
+            {
+                stateFile = Path.GetFullPath(args[1]);
+                if (discard && !File.Exists(stateFile)) return 0;
+                string[] saved = File.ReadAllLines(stateFile);
+                if (saved.Length != 2) throw new IOException("Invalid installation state");
+                target = Path.GetFullPath(saved[1]);
+                string candidate = Path.GetFullPath(saved[0]);
+                // Validate before assigning stage: finally must never clean an
+                // arbitrary path from a malformed state file.
+                if (Path.GetDirectoryName(candidate) != Path.GetDirectoryName(target)
+                    || !Regex.IsMatch(Path.GetFileName(candidate), @"^\.pilotdeck-install-[a-f0-9]{32}$"))
+                    throw new IOException("Invalid staging directory");
+                RejectReparseParents(candidate);
+                RejectReparseParents(target);
+                stage = candidate;
+                if (discard) { File.Delete(stateFile); return 0; }
+                owner = new IntPtr(long.Parse(args[2], CultureInfo.InvariantCulture));
+                chinese = args[3] == "zh";
+            }
+            else
+            {
+                target = Path.GetFullPath(args[2]).TrimEnd('\\', '/');
+                owner = new IntPtr(long.Parse(args[3], CultureInfo.InvariantCulture));
+                chinese = args[4] == "zh";
+                if (prepareOnly)
+                {
+                    stateFile = Path.GetFullPath(args[5]);
+                    cancelFile = stateFile + ".cancel";
+                }
+            }
             Console.OutputEncoding = Encoding.Default; // nsExec decodes Windows ANSI text
             if (owner != IntPtr.Zero)
             {
                 var page = FindWindowEx(owner, IntPtr.Zero, "#32770", null);
                 label = GetDlgItem(page, 1006);
-                bar = GetDlgItem(page, 1004);
+                bar = GetDlgItem(page, 1136);
             }
             RejectReparseParents(target);
             string parent = Path.GetDirectoryName(target);
             if (String.IsNullOrEmpty(parent)) throw new IOException("Cannot install at a volume root");
-            Directory.CreateDirectory(target);
-            stage = Path.Combine(parent, ".pilotdeck-install-" + Guid.NewGuid().ToString("N"));
+            if (!commitOnly) stage = Path.Combine(parent, ".pilotdeck-install-" + Guid.NewGuid().ToString("N"));
             string payload = Path.Combine(stage, "payload"), backup = Path.Combine(stage, "backup");
-            Directory.CreateDirectory(payload);
-            Console.WriteLine("Staging on the destination volume: " + stage);
-            Extract(decoder, archive, payload);
-            Status(Text("Committing installation files...", "正在提交安装文件……"), null);
+            if (!commitOnly)
+            {
+                Directory.CreateDirectory(payload);
+                Console.WriteLine("Staging on the destination volume: " + stage);
+                Extract(Path.GetFullPath(args[0]), Path.GetFullPath(args[1]), payload);
+                if (prepareOnly)
+                {
+                    File.WriteAllLines(stateFile, new[] { stage, target });
+                    prepared = true;
+                    Status(Text("Files ready for installation.", "文件准备完成。"), 90);
+                    return 0;
+                }
+            }
+            Status(Text("Committing installation files...", "正在提交安装文件……"), 90);
+            Directory.CreateDirectory(target);
             Commit(payload, target, backup, null);
             committed = true;
-            Status(Text("Finalizing installation: update cache and shortcuts...", "正在完成安装：更新缓存和快捷方式……"), null);
+            if (stateFile != null) File.Delete(stateFile);
+            Status(Text("Finalizing installation: update cache and shortcuts...", "正在完成安装：更新缓存和快捷方式……"), 95);
             return 0;
+        }
+        catch (OperationCanceledException)
+        {
+            Status(Text("Installation cancelled. Existing installation has not been changed.", "安装已取消，原有安装未被更改。"), null);
+            return 1223; // ERROR_CANCELLED
         }
         catch (Exception error)
         {
@@ -255,7 +308,7 @@ internal static class InstallPayload
             // recursively delete target or externally provided paths.
             try
             {
-                if (stage != null && Directory.Exists(stage))
+                if (!prepared && stage != null && Directory.Exists(stage))
                 {
                     string backup = Path.Combine(stage, "backup");
                     bool hasRecovery = !committed && Directory.Exists(backup) && Directory.GetFileSystemEntries(backup).Length != 0;

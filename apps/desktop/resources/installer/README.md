@@ -1,7 +1,8 @@
 # Windows installer payload
 
 The Windows installer keeps the complete application payload and the standard
-electron-builder upgrade, uninstaller, updater-cache and shortcut lifecycle.
+electron-builder uninstaller, updater-cache and shortcut steps. Replacement of
+an existing installation is confirmed before any existing files are changed.
 
 The stock `extractUsing7za` macro extracts the application into the Windows temp
 directory and then recursively copies it into the installation directory. With
@@ -20,7 +21,8 @@ code or invoke PowerShell on the user's machine.
 
 The preparation script stages a private copy of electron-builder's NSIS
 templates under the ignored `resources/.installer-tools/` directory. It replaces
-the extraction macro and enables details output. It redirects the builder's
+the extraction macro, defers old-version removal until extraction succeeds, and
+enables details output. It redirects the builder's
 `nsisTemplatesDir` export in the build process; it does not change `node_modules`.
 This is an internal builder API, so template edits assert their expected shape
 and the CI integration test must pass when updating electron-builder. Do not
@@ -30,22 +32,33 @@ uninstaller path.
 ## Progress and errors
 
 - The standard **Show details** button is available, initially collapsed.
-- During extraction, the progress bar follows 7-Zip's reported progress. The
+- A separate progress control owns the cumulative total; NSIS's instruction
+  counter updates a hidden native bar, so log lines cannot reset visible progress.
+  Extraction occupies 0–90%, commit starts at 90%, finalization at 95%, and only
+  completion reaches 100%. These stage weights are not a time prediction.
+- During extraction, progress follows 7-Zip's reported progress. The
   estimate is explicitly **extraction time remaining**, not a guaranteed finish
   time for the whole installer. It starts after three seconds of observations,
-  rounds up to five seconds, and becomes indeterminate after ten seconds without
+  rounds up to five seconds, and returns to estimating after ten seconds without
   reported progress. Disk and antivirus activity can still make it fluctuate.
-- Commit and finalization have named stages and an indeterminate progress bar.
-  Completion is reported after the standard cache, registry and shortcut steps.
-- A nonzero decoder/helper exit expands details and offers retry or cancel.
+- Interactive replacement requires Yes/No confirmation with No as the default.
+  A plain silent reinstall returns ERROR_CANCELLED (1223); the updater's explicit
+  silent `--updated` request keeps its existing unattended behavior.
+- Cancel is enabled during preparation/extraction, asks for confirmation, stops
+  the decoder and cleans staging before exiting with 1223. The existing version
+  remains intact. A pending cancellation dialog blocks the transition to commit.
+  Cancellation is disabled during old-version removal, commit and finalization;
+  these steps cannot safely be interrupted without full upgrade rollback.
+- A failed extraction expands details and offers retry or cancel.
   Silent installations fail with a nonzero exit code instead of waiting for input.
 - File moves retry for up to 15 seconds when files are temporarily held by another
   process; staging cleanup retries for five seconds. Persistent failures remain
   visible instead of silently skipping files.
 - A failed extraction does not commit partial files. A failed commit attempts to
   restore the entries it replaced; backups are retained if restoration fails.
-  This is **not full upgrade rollback**: the upstream installer still uninstalls
-  the previous version before extracting the new version.
+  This is **not full upgrade rollback**: after successful extraction and consent,
+  the upstream uninstaller removes the old version before the prepared payload
+  is committed. Cancellation and extraction failure occur before that boundary.
 - Staging needs space on the destination volume and permission to create a
   sibling directory. Directory-junction installation paths are rejected rather
   than risking a cross-volume move. Only the uniquely created staging directory
@@ -64,7 +77,10 @@ node apps/desktop/scripts/verify-installer-e2e.cjs
 These checks compile the NSIS launch paths, compare complete fixture payloads
 byte for byte (including Unicode paths), exercise corrupt archives, commit
 rollback/retry and ETA boundaries, and build/install/upgrade/uninstall an isolated
-test application. They run in the Windows release workflow. The fixture has a
+test application. The interactive fixture checks refusal, cancellation with a
+pending modal, enabled controls and monotonic progress across log updates. Its
+test-only decoder adds deterministic delays, then invokes the real decoder.
+They run in the Windows release workflow. The fixture has a
 unique application identity and never launches or changes the real PilotDeck app.
 
 Before releasing, also verify the interactive installer on Windows with a full

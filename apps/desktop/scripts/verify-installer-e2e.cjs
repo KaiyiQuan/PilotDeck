@@ -13,26 +13,43 @@ const { prepareWindowsInstaller } = require('./prepare-windows-installer.cjs');
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pilotdeck-nsis-e2e-'));
   const project = path.join(root, 'desktop project');
   const payload = path.join(root, 'payload');
-  const target = path.join(root, 'installed');
+  const target = path.join(root, 'PilotDeck Installer Test');
   const resources = path.join(project, 'resources');
   const name = `pilotdeck-installer-test-${crypto.randomUUID()}`;
   const productName = 'PilotDeck Installer Test';
   let installed = false;
   function run(exe, args) {
-    const result = spawnSync(exe, args, { windowsHide: true, encoding: 'utf8', timeout: 90_000 });
+    // NSIS _?= consumes the raw remainder of the command line, including spaces;
+    // wrapping that final argument in quotes disables its wait-in-place behavior.
+    const inPlaceUninstall = args.at(-1)?.startsWith('_?=');
+    const result = spawnSync(exe, args, { windowsHide: true, encoding: 'utf8', timeout: 90_000,
+      ...(inPlaceUninstall ? { windowsVerbatimArguments: true, argv0: `"${exe}"` } : {}) });
     assert.equal(result.status, 0, `${exe}: ${result.error || result.stderr || result.stdout || result.status}`);
+    if (result.stdout) console.log(result.stdout.trim());
   }
   try {
     fs.mkdirSync(resources, { recursive: true });
     fs.mkdirSync(path.join(payload, 'resources', 'git'), { recursive: true });
     for (const file of ['installer.nsh', 'installer-start-app.nsh', 'installer-payload.nsh'])
       fs.copyFileSync(path.join(__dirname, '..', 'resources', file), path.join(resources, file));
+    // Launch paths have their own compiler test. The fixture executable is data;
+    // never dispatch it to Explorer from the interactive finish page.
+    const include = path.join(resources, 'installer.nsh');
+    fs.writeFileSync(include, fs.readFileSync(include, 'utf8').replace(
+      /Exec '[^\r\n]*explorer\.exe[^\r\n]*'/g, 'DetailPrint "Test fixture: launch suppressed"'));
     fs.cpSync(path.join(__dirname, '..', 'resources', 'installer'), path.join(resources, 'installer'), { recursive: true });
     // It is deliberately not an executable: silent tests never launch the app.
     fs.writeFileSync(path.join(payload, `${productName}.exe`), 'installer fixture');
     fs.writeFileSync(path.join(payload, 'resources', 'git', '组件.txt'), 'all components retained');
     fs.writeFileSync(path.join(project, 'package.json'), JSON.stringify({ name, productName, version: '1.0.0', description: 'Installer fixture', author: 'PilotDeck' }));
-    await prepareWindowsInstaller(project);
+    const { output } = await prepareWindowsInstaller(project);
+    const compiler = path.join(process.env.WINDIR, 'Microsoft.NET', 'Framework64', 'v4.0.30319', 'csc.exe');
+    const realDecoder = path.join(root, 'real-7za.exe');
+    fs.copyFileSync(path.join(output, '7za.exe'), realDecoder);
+    run(compiler, ['/nologo', '/target:exe', `/out:${path.join(output, '7za.exe')}`,
+      `/resource:${realDecoder},decoder`, path.join(__dirname, 'fixtures', 'installer-slow-decoder.cs')]);
+    const uiTests = path.join(root, 'installer-ui-tests.exe');
+    run(compiler, ['/nologo', '/target:exe', `/out:${uiTests}`, path.join(__dirname, 'fixtures', 'installer-ui-tests.cs')]);
     const config = {
       appId: `cn.pilotdeck.test.${name}`, productName, electronVersion: '42.3.3',
       directories: { output: path.join(root, 'artifacts') },
@@ -49,20 +66,35 @@ const { prepareWindowsInstaller } = require('./prepare-windows-installer.cjs');
     assert.ok(setup, 'compiled installer');
     for (const label of ['fresh install', 'upgrade']) {
       installed = true;
-      run(setup, ['/S', '/currentuser', `/D=${target}`]);
+      if (label === 'upgrade') {
+        const refused = spawnSync(setup, ['/S', '/currentuser', `/D=${target}`], { windowsHide: true, timeout: 90_000 });
+        assert.equal(refused.status, 1223, 'unattended replacement requires explicit update intent');
+        assert.equal(fs.readFileSync(path.join(target, 'resources', 'git', '组件.txt'), 'utf8'), 'all components retained');
+      }
+      run(setup, ['/S', '/currentuser', ...(label === 'upgrade' ? ['--updated'] : []), `/D=${target}`]);
       assert.equal(fs.readFileSync(path.join(target, 'resources', 'git', '组件.txt'), 'utf8'), 'all components retained', label);
       assert.ok(fs.existsSync(path.join(target, `Uninstall ${productName}.exe`)), 'uninstaller exists');
       assert.ok(!fs.readdirSync(root).some(file => file.startsWith('.pilotdeck-install-')), 'staging cleaned');
     }
+    const marker = path.join(target, 'old-version-marker.txt');
+    fs.writeFileSync(marker, 'must survive refusal and cancellation');
+    for (const mode of ['decline', 'cancel-now', 'cancel', 'approve']) {
+      run(uiTests, [setup, target, mode]);
+      assert.equal(fs.readFileSync(path.join(target, 'resources', 'git', '组件.txt'), 'utf8'), 'all components retained');
+      if (mode !== 'approve') assert.equal(fs.readFileSync(marker, 'utf8'), 'must survive refusal and cancellation');
+      else assert.ok(!fs.existsSync(marker), 'confirmed upgrade runs old-version uninstall');
+      assert.ok(fs.existsSync(path.join(target, `Uninstall ${productName}.exe`)));
+      assert.ok(!fs.readdirSync(root).some(file => file.startsWith('.pilotdeck-install-')), 'cancel/commit cleans staging');
+    }
     run(path.join(target, `Uninstall ${productName}.exe`), ['/S', '/currentuser', `_?=${target}`]);
     installed = false;
     assert.ok(!fs.existsSync(path.join(target, 'resources')), 'uninstall removed test payload');
-    console.log('PASS: real NSIS build, silent installation, upgrade and uninstall with isolated app identity');
+    console.log('PASS: real NSIS silent/interactive upgrades, consent, cumulative progress, cancellation and uninstall');
   } finally {
     if (installed && fs.existsSync(path.join(target, `Uninstall ${productName}.exe`)))
       run(path.join(target, `Uninstall ${productName}.exe`), ['/S', '/currentuser', `_?=${target}`]);
     // Absolute paths under this newly created test root only.
-    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 500 });
     if (process.env.LOCALAPPDATA) fs.rmSync(path.join(process.env.LOCALAPPDATA, `${name}-updater`), { recursive: true, force: true });
   }
 })().catch(error => { console.error(error); process.exitCode = 1; });

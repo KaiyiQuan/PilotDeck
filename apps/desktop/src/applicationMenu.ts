@@ -5,6 +5,7 @@ import type { DesktopAppearance } from './appearance';
 export function buildApplicationMenu(
   platform: NodeJS.Platform,
   language: DesktopAppearance['language'],
+  requestQuit?: () => void,
 ): MenuItemConstructorOptions[] {
   const mac = platform === 'darwin';
   const text = (zh: string, en: string) => language === 'zh-CN' ? zh : en;
@@ -26,7 +27,9 @@ export function buildApplicationMenu(
     }] : []),
     {
       label: text('文件', mac ? 'File' : '&File'),
-      submenu: [mac ? item('close', '关闭窗口', 'Close Window') : item('quit', '退出', 'Exit')],
+      submenu: [mac ? item('close', '关闭窗口', 'Close Window')
+        : platform === 'win32' && requestQuit ? { label: text('退出', 'Exit'), click: requestQuit }
+          : item('quit', '退出', 'Exit')],
     },
     {
       label: text('编辑', mac ? 'Edit' : '&Edit'),
