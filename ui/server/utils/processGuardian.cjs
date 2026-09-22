@@ -37,7 +37,12 @@ async function launch() {
     let holder;
     try {
       holder = cp.spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-        '-File', path.join(__dirname, 'processJob.ps1'), String(process.pid), ready, stopped, stop, identity.birth], { stdio: ['ignore', logFd, logFd], windowsHide: true });
+        '-File', path.join(__dirname, 'processJob.ps1'), String(process.pid), ready, stopped, stop, identity.birth], {
+        stdio: ['ignore', logFd, logFd], windowsHide: true,
+        // libuv otherwise puts the holder in its own kill-on-parent-exit Job.
+        // It must survive this guardian to certify native Job termination.
+        detached: true,
+      });
     } finally { fs.closeSync(logFd); }
     let failed = false;
     let diagnostic = '';
