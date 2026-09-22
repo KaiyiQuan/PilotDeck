@@ -36,8 +36,8 @@ async function launch() {
     const logFd = fs.openSync(log, 'a');
     let holder;
     try {
-      holder = cp.spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-        '-File', path.join(__dirname, 'processJob.ps1'), String(process.pid), ready, stopped, stop, identity.birth], {
+      holder = cp.spawn(process.execPath, [path.join(__dirname, 'processJobHost.cjs'),
+        String(process.pid), ready, stopped, stop, identity.birth], {
         stdio: ['ignore', logFd, logFd], windowsHide: true,
         // libuv otherwise puts the holder in its own kill-on-parent-exit Job.
         // It must survive this guardian to certify native Job termination.
@@ -47,7 +47,10 @@ async function launch() {
     let failed = false;
     let diagnostic = '';
     holder.on('error', error => { failed = true; diagnostic = error.message; });
-    holder.on('exit', () => { if (!fs.existsSync(ready)) failed = true; });
+    holder.on('exit', (code, signal) => {
+      if (!fs.existsSync(ready)) failed = true;
+      if (code !== 0) fs.appendFileSync(log, `Job host exited: code=${code}, signal=${signal}\n`);
+    });
     record.job = { ready, stopped, stop, log, holder: holder.pid };
     writeRecord(file, record);
     record.job.holderIdentity = getProcessIdentity(holder.pid);

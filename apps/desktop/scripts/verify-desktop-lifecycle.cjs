@@ -28,7 +28,7 @@ async function verify(scenario) {
       const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText;
       fs.writeFileSync(path.join(root, 'dist', file.replace(/\.ts$/, '.js')), compiled);
     }
-    for (const file of ['processTree.js', 'processIdentity.cjs', 'processScope.cjs', 'processGuardian.cjs', 'processJob.ps1']) {
+    for (const file of ['processTree.js', 'processIdentity.cjs', 'processScope.cjs', 'processGuardian.cjs', 'processJobHost.cjs', 'processJob.ps1']) {
       fs.copyFileSync(path.resolve(desktop, '../../ui/server/utils', file), path.join(utils, file));
     }
     const treeFile = path.join(utils, 'processTree.js');
@@ -74,7 +74,7 @@ async function verify(scenario) {
     };
     delete env.ELECTRON_RUN_AS_NODE;
     delete env.PILOTDECK_DESKTOP_GIT_ROOT;
-    const result = spawnSync(require('electron'), [root], { env, windowsHide: true, encoding: 'utf8', timeout: scenario === 'manual' ? 300_000 : 120_000 });
+    const result = spawnSync(require('electron'), [root], { env, windowsHide: true, encoding: 'utf8', timeout: scenario === 'manual' ? 300_000 : 120_000, killSignal: 'SIGKILL' });
     const step = path.join(root, 'step');
     assert.equal(result.status, 0, `${scenario}: ${fs.existsSync(step) ? fs.readFileSync(step, 'utf8') : 'before first checkpoint'}\n${result.error || ''}\n${result.stdout}\n${result.stderr}`);
     assert.ok(fs.existsSync(path.join(root, 'passed')), 'real app reached graceful shutdown');
