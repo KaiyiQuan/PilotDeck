@@ -29,7 +29,10 @@ if (process.argv.includes('--tray-second-instance')) {
       if (key === 'showMessageBox' && scenario !== 'manual') return (owner, options) => new Promise(resolve => dialogs.push({ owner, options, resolve }));
       if (key === 'showErrorBox') return (title, message) => {
         stopErrors.push(message);
-        if (scenario !== 'stop-failure' || stopErrors.length !== 1 || !message.includes('Injected cleanup failure')) throw new Error(`${title}: ${message}`);
+        if (scenario !== 'stop-failure' || stopErrors.length !== 1 || failStop) {
+          console.error(`${title}: ${message}`);
+          app.exit(1);
+        }
       };
       return target[key];
     },
@@ -63,7 +66,8 @@ if (process.argv.includes('--tray-second-instance')) {
     } };
     if (path.basename(id) === 'processTree.js') return { ...result, stopProcessTree: async (...args) => {
       if (failStop) { failStop = false; throw new Error('Injected cleanup failure'); }
-      return result.stopProcessTree(...args);
+      try { return await result.stopProcessTree(...args); }
+      catch (error) { console.error('Unexpected native cleanup failure:', error); app.exit(1); throw error; }
     } };
     return result;
   };
