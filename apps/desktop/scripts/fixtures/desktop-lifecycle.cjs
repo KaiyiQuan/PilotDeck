@@ -29,7 +29,7 @@ if (process.argv.includes('--tray-second-instance')) {
       if (key === 'showMessageBox' && scenario !== 'manual') return (owner, options) => new Promise(resolve => dialogs.push({ owner, options, resolve }));
       if (key === 'showErrorBox') return (title, message) => {
         stopErrors.push(message);
-        if (scenario !== 'stop-failure') throw new Error(`${title}: ${message}`);
+        if (scenario !== 'stop-failure' || stopErrors.length !== 1 || !message.includes('Injected cleanup failure')) throw new Error(`${title}: ${message}`);
       };
       return target[key];
     },
