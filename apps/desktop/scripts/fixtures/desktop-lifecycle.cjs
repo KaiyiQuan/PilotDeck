@@ -192,8 +192,10 @@ if (process.argv.includes('--tray-second-instance')) {
       window.setFullScreen(false);
       await until(() => !window.isFullScreen(), 'leaves native full screen');
       app.hide();
+      // Native app hiding is asynchronous; activate only after it completes.
+      await until(() => app.isHidden(), 'application finishes hiding');
       app.emit('activate');
-      await until(() => window.isVisible(), 'Dock restores hidden application');
+      await until(() => !app.isHidden() && window.isVisible(), 'Dock restores hidden application');
       assert.equal(await window.webContents.executeJavaScript('window.unsentDraft'), 'preserve this');
     }
 
