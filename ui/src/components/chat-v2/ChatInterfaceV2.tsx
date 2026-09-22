@@ -846,8 +846,8 @@ function ChatInterfaceV2({
       : '';
     if (compact) {
       return (
-        <div className="flex h-full min-w-0 flex-col bg-white dark:bg-neutral-950">
-          <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-6 text-center">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-white dark:bg-neutral-950">
+          <div className="flex min-h-0 flex-1 flex-col items-center justify-center overflow-y-auto px-4 text-center">
             <div className="mb-3 flex h-9 w-9 items-center justify-center rounded-xl border border-neutral-200 bg-neutral-50 text-neutral-500 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-400">
               <MessageSquare className="h-4 w-4" strokeWidth={1.8} />
             </div>

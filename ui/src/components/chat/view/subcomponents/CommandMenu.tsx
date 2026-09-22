@@ -1,5 +1,7 @@
+import { createPortal } from "react-dom";
+import { useFloatingPanel } from "../../../ui/useFloatingPanel";
 import { useEffect, useRef } from 'react';
-import type { CSSProperties, ReactNode } from 'react';
+import type { RefObject, ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '../../../../lib/utils.js';
 
@@ -19,7 +21,7 @@ type CommandMenuProps = {
   selectedIndex?: number;
   onSelect?: (command: CommandMenuCommand, index: number, isHover: boolean) => void;
   onClose: () => void;
-  position?: { top: number; left: number; bottom?: number; width?: number };
+  anchorRef: RefObject<HTMLElement | null>;
   isOpen?: boolean;
   frequentCommands?: CommandMenuCommand[];
   query?: string;
@@ -28,39 +30,6 @@ type CommandMenuProps = {
 
 const getCommandKey = (command: CommandMenuCommand) =>
   `${command.name}::${command.namespace || command.type || 'other'}::${command.path || ''}`;
-
-const getMenuPosition = (position: {
-  top: number;
-  left: number;
-  bottom?: number;
-  width?: number;
-}): CSSProperties => {
-  if (typeof window === 'undefined') {
-    return { position: 'fixed', top: '16px', left: '16px' };
-  }
-  const header = document.querySelector('.workspace-header');
-  const headerBottom = header instanceof HTMLElement ? header.getBoundingClientRect().bottom : 0;
-  const bottomOffset = position.bottom ?? Math.max(16, window.innerHeight - position.top);
-  const availableHeight = Math.floor(window.innerHeight - bottomOffset - headerBottom);
-  const maxHeight = Math.min(330, Math.max(1, availableHeight));
-
-  if (window.innerWidth < 640) {
-    return {
-      position: 'fixed',
-      bottom: `${position.bottom ?? 90}px`,
-      left: '16px',
-      right: '16px',
-      maxHeight: `${Math.min(maxHeight, Math.round(window.innerHeight * 0.5))}px`,
-    };
-  }
-  return {
-    position: 'fixed',
-    bottom: `${bottomOffset}px`,
-    left: `${Math.max(8, position.left - 10)}px`,
-    width: `${Math.min(position.width ? position.width + 20 : 720, window.innerWidth - 16)}px`,
-    maxHeight: `${maxHeight}px`,
-  };
-};
 
 function renderHighlightedText(
   text: string,
@@ -115,32 +84,15 @@ export default function CommandMenu({
   selectedIndex = -1,
   onSelect,
   onClose,
-  position = { top: 0, left: 0 },
+  anchorRef,
   isOpen = false,
   query = '',
   selectedCommands = [],
 }: CommandMenuProps) {
   const { t } = useTranslation('chat');
-  const menuRef = useRef<HTMLDivElement | null>(null);
+  const { panelRef: menuRef, style: menuPosition } = useFloatingPanel(isOpen, anchorRef, onClose, { matchComposer: true, maxHeight: 330 });
   const selectedItemRef = useRef<HTMLDivElement | null>(null);
-  const menuPosition = getMenuPosition(position);
   const selectedCommandNames = new Set(selectedCommands.map((command) => command.name));
-
-  useEffect(() => {
-    if (!isOpen) {
-      return;
-    }
-    const handleClickOutside = (event: MouseEvent) => {
-      if (!menuRef.current || !(event.target instanceof Node)) {
-        return;
-      }
-      if (!menuRef.current.contains(event.target)) {
-        onClose();
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [isOpen, onClose]);
 
   useEffect(() => {
     if (!selectedItemRef.current || !menuRef.current) {
@@ -157,7 +109,7 @@ export default function CommandMenu({
     return null;
   }
 
-  return (
+  return createPortal(
     <div
       ref={menuRef}
       className="flex flex-col overflow-hidden rounded-[14px] border border-violet-200 bg-white p-2 text-left font-sans tracking-normal shadow-xl shadow-violet-950/10 [font-synthesis:none] dark:border-violet-900/70 dark:bg-neutral-900"
@@ -240,6 +192,6 @@ export default function CommandMenu({
           );
         })}
       </div>
-    </div>
+    </div>, document.body
   );
 }
