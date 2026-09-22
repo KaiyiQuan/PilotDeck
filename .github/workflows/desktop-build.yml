@@ -109,6 +109,9 @@ jobs:
       - name: Verify managed process ownership and crash cleanup
         run: node --test apps/desktop/scripts/process-scope.test.mjs
 
+      - name: Verify macOS background and quit lifecycle
+        run: node apps/desktop/scripts/verify-desktop-lifecycle.cjs
+
       - name: Set desktop release metadata
         run: node apps/desktop/scripts/set-ci-version.mjs
 
