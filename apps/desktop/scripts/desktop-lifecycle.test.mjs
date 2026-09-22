@@ -13,28 +13,45 @@ function load(name) {
   new Function('module', 'exports', 'require', compiled)(mod, mod.exports, require);
   return mod.exports;
 }
-const { createWindowsTray } = load('windowsTray');
+const { createDesktopTray } = load('desktopTray');
+const { createDesktopLifecycle } = load('desktopLifecycle');
 const { buildApplicationMenu } = load('applicationMenu');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
-function setup({ failTray = false } = {}) {
+function setup({ failTray = false, platform = 'win32', stopRuntime = async () => {} } = {}) {
   const state = { quitting: false, chinese: true, quits: 0, restores: 0, dialogs: [], errors: [] };
   const window = Object.assign(new EventEmitter(), {
-    visible: true, destroyed: false, hide() { this.visible = false; }, isDestroyed() { return this.destroyed; },
+    isFullScreen: () => false, visible: true, destroyed: false, hide() { this.visible = false; }, isDestroyed() { return this.destroyed; },
   });
   const tray = Object.assign(new EventEmitter(), {
     destroyed: false, menu: [], isDestroyed() { return this.destroyed; }, destroy() { this.destroyed = true; },
     setToolTip(text) { this.tooltip = text; }, setContextMenu(menu) { this.menu = menu; },
   });
-  const controller = createWindowsTray({
-    createTray: () => { if (failTray) throw new Error('tray unavailable'); return tray; },
-    buildMenu: items => items, getWindow: () => window,
+  let trayController;
+  const lifecycle = createDesktopLifecycle({
+    platform,
+    shouldConfirm: () => true,
+    canHide: () => platform === 'darwin' || trayController.available(),
+    getWindow: () => window,
     restoreWindow: async () => { state.restores++; window.visible = true; },
-    isQuitting: () => state.quitting, isChinese: () => state.chinese,
+    isQuitting: () => state.quitting, setQuitting: value => { state.quitting = value; },
+    isChinese: () => state.chinese,
     showDialog: (owner, options) => new Promise((resolve, reject) => { state.dialogs.push({ owner, options, resolve, reject }); }),
-    quit: () => { state.quits++; state.quitting = true; },
+    stopRuntime,
+    quit: () => { state.quits++; },
+    reportError: error => state.errors.push(error),
+    reportStopError: error => state.errors.push(error),
+  });
+  trayController = createDesktopTray({
+    platform,
+    createTray: () => { if (failTray) throw new Error('tray unavailable'); return tray; },
+    buildMenu: items => items, isChinese: () => state.chinese,
+    open: lifecycle.open, requestQuit: lifecycle.requestQuit,
     reportError: error => state.errors.push(error),
   });
+  const controller = { ...lifecycle, ...trayController,
+    dispose() { lifecycle.dispose(); trayController.dispose(); },
+  };
   controller.attachWindow(window);
   function close() {
     const event = { prevented: false, preventDefault() { this.prevented = true; } };
@@ -93,8 +110,6 @@ test('only confirmation quits; allow close during cleanup but retain tray until 
   assert.equal(state.quits, 1);
   assert.equal(close(), false);
   assert.equal(tray.destroyed, false, 'keep recovery access until will-quit');
-  state.quitting = false; // Runtime shutdown failed; app can remain running.
-  assert.equal(close(), true);
   controller.dispose();
   assert.equal(tray.destroyed, true);
   assert.equal(controller.available(), false);
@@ -114,7 +129,7 @@ test('update/system quit bypasses hiding and confirmation, including an outstand
   window.visible = false;
   await controller.open();
   assert.equal(window.visible, false);
-  assert.equal(state.quits, 0, 'do not duplicate the update quit');
+  assert.equal(state.quits, 1, 'update quit bypasses confirmation');
   assert.equal(state.dialogs.length, 1);
 });
 
@@ -156,4 +171,97 @@ test('File > Exit shares confirmation on Windows; other platforms retain native 
       assert.equal(items.find(item => item.label === 'Close Window').role, 'close');
     } else assert.equal(items.some(item => item.role === 'quit'), true);
   }
+});
+
+for (const platform of ['darwin', 'win32']) {
+  test(`${platform}: native quit is intercepted, cleanup happens once, failure can be retried`, async () => {
+    let stops = 0;
+    const { state, window, controller, close } = setup({ platform, stopRuntime: async () => {
+      if (++stops === 1) throw new Error('process still alive');
+    } });
+    close();
+    let prevented = 0;
+    controller.beforeQuit({ preventDefault() { prevented++; } });
+    controller.beforeQuit({ preventDefault() { prevented++; } });
+    await tick();
+    assert.equal(prevented, 2);
+    assert.equal(state.dialogs.length, 1);
+    state.dialogs[0].resolve({ response: 1 });
+    await tick();
+    assert.equal(state.quits, 0);
+    assert.equal(state.quitting, false);
+    assert.equal(window.visible, true);
+    assert.match(state.errors[0].message, /still alive/);
+    assert.equal(close(), true);
+    const pending = controller.requestQuit();
+    await tick();
+    state.dialogs[1].resolve({ response: 1 });
+    await pending;
+    assert.equal(stops, 2);
+    assert.equal(state.quits, 1);
+    controller.beforeQuit({ preventDefault() { assert.fail('final quit must proceed'); } });
+  });
+}
+
+test('system quit supersedes an open confirmation and waits for cleanup exactly once', async () => {
+  let finishStop, stops = 0;
+  const { state, controller, close } = setup({ platform: 'darwin', stopRuntime: () => {
+    stops++;
+    return new Promise(resolve => { finishStop = resolve; });
+  } });
+  const confirmation = controller.requestQuit();
+  await tick();
+  const shutdown = controller.requestQuit(true);
+  controller.beforeQuit({ preventDefault() {} });
+  assert.equal(stops, 1);
+  assert.equal(state.quits, 0);
+  assert.equal(close(), false);
+  state.dialogs[0].resolve({ response: 1 });
+  await confirmation;
+  assert.equal(stops, 1);
+  finishStop();
+  await shutdown;
+  assert.equal(state.quits, 1);
+});
+
+test('Mac status icon click leaves menu handling to macOS; menu actions use shared lifecycle', async () => {
+  const { state, window, tray, close } = setup({ platform: 'darwin' });
+  close();
+  tray.emit('click');
+  await tick();
+  assert.equal(window.visible, false);
+  tray.menu[0].click();
+  await tick();
+  assert.equal(window.visible, true);
+  tray.menu[2].click();
+  await tick();
+  assert.equal(state.dialogs.length, 1);
+  state.dialogs[0].resolve({ response: 0 });
+});
+
+test('Mac can still hide and restore from Dock if the status icon is unavailable', async () => {
+  const { window, controller, close } = setup({ platform: 'darwin', failTray: true });
+  assert.equal(controller.available(), false);
+  assert.equal(close(), true);
+  assert.equal(window.visible, false);
+  await controller.open();
+  assert.equal(window.visible, true);
+});
+
+test('Mac full-screen close waits for the Space transition; a new open cancels pending hide', async () => {
+  const { window, controller, close } = setup({ platform: 'darwin' });
+  let exits = 0;
+  window.isFullScreen = () => true;
+  window.setFullScreen = value => { assert.equal(value, false); exits++; };
+  close();
+  assert.equal(window.visible, true);
+  window.emit('enter-full-screen');
+  assert.equal(exits, 2, 'closing during entry also requests exit once entry finishes');
+  window.emit('leave-full-screen');
+  assert.equal(window.visible, false);
+  await controller.open();
+  close();
+  await controller.open();
+  window.emit('leave-full-screen');
+  assert.equal(window.visible, true, 'late full-screen events cannot undo an explicit restore');
 });

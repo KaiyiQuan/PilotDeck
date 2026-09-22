@@ -1,8 +1,9 @@
 import { installRendererRecovery } from "./rendererRecovery";
 import { buildApplicationMenu } from "./applicationMenu";
-import { createWindowsTray } from "./windowsTray";
+import { createDesktopTray } from "./desktopTray";
+import { createDesktopLifecycle } from "./desktopLifecycle";
 import { normalizeAppearance, renderLoadingHtml, startupText, type DesktopAppearance } from "./appearance";
-import { app, BrowserWindow, dialog, ipcMain, Menu, shell, Tray } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, shell, Tray, nativeImage, powerMonitor } from "electron";
 import { MacUpdater, NsisUpdater } from "electron-updater";
 import { createUpdateController } from "./updates";
 import { createUpdateNetwork } from "./updateNetwork";
@@ -54,7 +55,7 @@ let isQuitting = false;
 let runtimeStartPromise: Promise<RuntimeInfo> | null = null;
 let lastRuntimeStatus: RuntimeStatus | null = null;
 let updateOrigin: string | null = null;
-let windowsTray: ReturnType<typeof createWindowsTray> | null = null;
+let desktopTray: ReturnType<typeof createDesktopTray> | null = null;
 
 const APP_ID = "cn.pilotdeck.desktop";
 const EXTERNAL_NAVIGATION_PROTOCOLS = new Set(["http:", "https:", "mailto:", "tel:"]);
@@ -496,6 +497,7 @@ async function createOrShowWindow(): Promise<void> {
   if (isQuitting) return;
   if (mainWindow && !mainWindow.isDestroyed()) {
     if (mainWindow.isMinimized()) mainWindow.restore();
+    if (process.platform === "darwin") app.show();
     mainWindow.show();
     mainWindow.focus();
     return;
@@ -522,12 +524,12 @@ async function createOrShowWindow(): Promise<void> {
   });
 
   const recoveryWindow = mainWindow;
-  windowsTray?.attachWindow(recoveryWindow);
+  lifecycle.attachWindow(recoveryWindow);
   // Windows logoff/shutdown does not go through app's normal quit events.
   // Respect the OS session end without displaying a quit confirmation.
   recoveryWindow.on("session-end", () => {
     isQuitting = true;
-    windowsTray?.dispose();
+    desktopTray?.dispose();
   });
   installRendererRecovery(recoveryWindow, {
     isQuitting: () => isQuitting,
@@ -934,7 +936,7 @@ function readAppearance(): DesktopAppearance {
 function updateApplicationMenu(): void {
   Menu.setApplicationMenu(Menu.buildFromTemplate(
     buildApplicationMenu(process.platform, readAppearance().language,
-      windowsTray ? () => { void windowsTray?.requestQuit(); } : undefined),
+      () => { void lifecycle.requestQuit(); }),
   ));
 }
 
@@ -948,7 +950,7 @@ ipcMain.handle("pilotdeck:set-appearance", (event, value: unknown) => {
     fs.writeFileSync(file, JSON.stringify(appearance), "utf8");
     if (current.language !== appearance.language) {
       updateApplicationMenu();
-      windowsTray?.refreshMenu();
+      desktopTray?.refreshMenu();
     }
   }
 });
@@ -973,6 +975,27 @@ if (process.platform === "win32") {
   app.setAppUserModelId(APP_ID);
 }
 
+const lifecycle = createDesktopLifecycle({
+  platform: process.platform,
+  shouldConfirm: () => app.isReady() && (process.platform === "darwin" || process.platform === "win32"),
+  canHide: () => process.platform === "darwin" || Boolean(desktopTray?.available()),
+  isQuitting: () => isQuitting,
+  setQuitting: value => { isQuitting = value; },
+  getWindow: () => mainWindow,
+  restoreWindow: restoreMainWindow,
+  isChinese: () => readAppearance().language === "zh-CN",
+  showDialog: (owner, options) => dialog.showMessageBox(owner, options),
+  stopRuntime: async () => {
+    await runtimeStartPromise?.catch(() => undefined);
+    await runtime?.stop();
+    runtime = null;
+    runtimeStartPromise = null;
+  },
+  quit: () => app.quit(),
+  reportError: error => console.error("PilotDeck lifecycle operation failed", error),
+  reportStopError: error => dialog.showErrorBox(startupText("PilotDeck could not stop", readAppearance().language), String(error)),
+});
+
 const ownsInstance = process.platform !== "win32" || app.requestSingleInstanceLock();
 if (!ownsInstance) {
   app.quit();
@@ -982,21 +1005,35 @@ if (!ownsInstance) {
   });
   app.whenReady()
     .then(async () => {
-      if (process.platform === "win32") {
-        windowsTray = createWindowsTray({
+      if (process.platform === "win32" || process.platform === "darwin") {
+        desktopTray = createDesktopTray({
+          platform: process.platform,
           createTray: () => {
+            if (process.platform === "darwin") {
+              const iconPath = app.isPackaged
+                ? path.join(process.resourcesPath, "icons", "trayTemplate.png")
+                : path.resolve(__dirname, "..", "resources", "icons", "trayTemplate.png");
+              const image = nativeImage.createFromPath(iconPath);
+              if (image.isEmpty()) throw new Error("PilotDeck menu bar icon is missing");
+              image.setTemplateImage(true);
+              return new Tray(image);
+            }
             const icon = resolveAppIcon();
             if (!icon) throw new Error("PilotDeck tray icon is missing");
             return new Tray(icon);
           },
           buildMenu: items => Menu.buildFromTemplate(items),
-          getWindow: () => mainWindow,
-          restoreWindow: restoreMainWindow,
-          isQuitting: () => isQuitting,
           isChinese: () => readAppearance().language === "zh-CN",
-          showDialog: (owner, options) => dialog.showMessageBox(owner, options),
-          quit: () => app.quit(),
+          open: lifecycle.open,
+          requestQuit: lifecycle.requestQuit,
           reportError: error => console.error("PilotDeck tray operation failed", error),
+        });
+      }
+      if (process.platform === "darwin") {
+        // Shutdown is distinct from sleep: let the OS terminate without a prompt.
+        powerMonitor.on("shutdown", (event?: Electron.Event) => {
+          event?.preventDefault();
+          void lifecycle.requestQuit(true);
         });
       }
       await createOrShowWindow();
@@ -1011,50 +1048,20 @@ if (!ownsInstance) {
         logPath: runtime?.getLogPath(),
         error: detail,
       });
-      app.quit();
+      void lifecycle.requestQuit(true);
     });
 }
 
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin" && !windowsTray?.available() && !isQuitting) app.quit();
+  if (process.platform !== "darwin" && !desktopTray?.available() && !isQuitting) app.quit();
 });
 
 app.on("activate", () => {
-  if (!isQuitting && (mainWindow === null || mainWindow.isDestroyed())) {
-    createOrShowWindow()
-      .then(startRuntimeAndLoad)
-      .catch((error) => {
-        const detail = error instanceof Error ? error.stack ?? error.message : String(error);
-        publishRuntimeStatus({
-          phase: "error",
-          message: "PilotDeck failed to restore window.",
-          logPath: runtime?.getLogPath(),
-          error: detail,
-        });
-      });
-  }
+  void lifecycle.open();
 });
 
-let stoppingForQuit = false;
-app.on("before-quit", (event) => {
-  isQuitting = true;
-  if (!runtime) return;
-  event.preventDefault();
-  if (stoppingForQuit) return;
-  stoppingForQuit = true;
-  const currentRuntime = runtime;
-  // Continue the normal quit lifecycle, including updater listeners.
-  // A quit during startup must not leave processes spawned after stop() behind.
-  (async () => {
-    await runtimeStartPromise?.catch(() => undefined);
-    await currentRuntime.stop();
-  })().then(() => { runtime = null; stoppingForQuit = false; app.quit(); }).catch(async (error) => {
-    stoppingForQuit = false;
-    runtime = currentRuntime;
-    isQuitting = false;
-    await restoreMainWindow().catch(() => undefined);
-    dialog.showErrorBox(startupText("PilotDeck could not stop", readAppearance().language), String(error));
-  });
+app.on("before-quit", event => lifecycle.beforeQuit(event));
+app.on("will-quit", () => {
+  lifecycle.dispose();
+  desktopTray?.dispose();
 });
-
-app.on("will-quit", () => windowsTray?.dispose());
