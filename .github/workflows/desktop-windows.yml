@@ -56,6 +56,12 @@ jobs:
       - name: Compile and verify NSIS launch paths
         run: node apps/desktop/scripts/verify-installer.cjs
 
+      - name: Verify installer extraction, commit and progress
+        run: node apps/desktop/scripts/verify-installer-payload.cjs
+
+      - name: Install, upgrade and uninstall an isolated NSIS fixture
+        run: node apps/desktop/scripts/verify-installer-e2e.cjs
+
       - name: Set desktop release metadata
         run: node apps/desktop/scripts/set-ci-version.mjs
 

@@ -164,4 +164,7 @@ module.exports = async function afterPack(context) {
 
   verifyPackagedRuntime(target, context, "runtime");
   ensureMacSigningFallback(context);
+  if (context.electronPlatformName === "win32") {
+    await require("./prepare-windows-installer.cjs").prepareWindowsInstaller(desktopRoot);
+  }
 };
