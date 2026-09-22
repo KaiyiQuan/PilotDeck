@@ -75,7 +75,8 @@ async function verify(scenario) {
     delete env.ELECTRON_RUN_AS_NODE;
     delete env.PILOTDECK_DESKTOP_GIT_ROOT;
     const result = spawnSync(require('electron'), [root], { env, windowsHide: true, encoding: 'utf8', timeout: scenario === 'manual' ? 300_000 : 120_000 });
-    assert.equal(result.status, 0, `${result.error || ''}\n${result.stdout}\n${result.stderr}`);
+    const step = path.join(root, 'step');
+    assert.equal(result.status, 0, `${scenario}: ${fs.existsSync(step) ? fs.readFileSync(step, 'utf8') : 'before first checkpoint'}\n${result.error || ''}\n${result.stdout}\n${result.stderr}`);
     assert.ok(fs.existsSync(path.join(root, 'passed')), 'real app reached graceful shutdown');
     console.log(`PASS: ${process.platform} Electron lifecycle — ${scenario}`);
   } finally {

@@ -27,7 +27,10 @@ if (process.argv.includes('--tray-second-instance')) {
   const nativeDialog = new Proxy(electron.dialog, {
     get(target, key) {
       if (key === 'showMessageBox' && scenario !== 'manual') return (owner, options) => new Promise(resolve => dialogs.push({ owner, options, resolve }));
-      if (key === 'showErrorBox') return (title, message) => { stopErrors.push(message); };
+      if (key === 'showErrorBox') return (title, message) => {
+        stopErrors.push(message);
+        if (scenario !== 'stop-failure') throw new Error(`${title}: ${message}`);
+      };
       return target[key];
     },
   });
@@ -69,6 +72,7 @@ if (process.argv.includes('--tray-second-instance')) {
   const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
   async function until(predicate, description) {
     fs.writeFileSync(path.join(__dirname, 'step'), description);
+    console.log(`[${scenario}] ${description}`);
     const deadline = Date.now() + 20_000;
     while (!predicate()) {
       assert.ok(Date.now() < deadline, description);

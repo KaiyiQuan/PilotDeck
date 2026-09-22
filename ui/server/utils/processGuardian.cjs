@@ -30,20 +30,26 @@ async function launch() {
   writeRecord(file, record);
   if (process.platform === 'win32') {
     const ready = `${file}.ready`, stopped = `${file}.stopped`, stop = `${file}.stop`;
-    const holder = cp.spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-      '-File', path.join(__dirname, 'processJob.ps1'), String(process.pid), ready, stopped, stop, identity.birth], { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
+    // The Job terminates this guardian too. Keep supervisor diagnostics outside
+    // its pipes so failures during termination survive the guardian's exit.
+    const log = `${file}.job.log`;
+    const logFd = fs.openSync(log, 'a');
+    let holder;
+    try {
+      holder = cp.spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+        '-File', path.join(__dirname, 'processJob.ps1'), String(process.pid), ready, stopped, stop, identity.birth], { stdio: ['ignore', logFd, logFd], windowsHide: true });
+    } finally { fs.closeSync(logFd); }
     let failed = false;
     let diagnostic = '';
-    holder.stderr.on('data', chunk => { diagnostic = (diagnostic + chunk.toString()).slice(-4000); });
     holder.on('error', error => { failed = true; diagnostic = error.message; });
     holder.on('exit', () => { if (!fs.existsSync(ready)) failed = true; });
-    record.job = { ready, stopped, stop, holder: holder.pid };
+    record.job = { ready, stopped, stop, log, holder: holder.pid };
     writeRecord(file, record);
     record.job.holderIdentity = getProcessIdentity(holder.pid);
     if (!record.job.holderIdentity) throw new Error('Windows Job supervisor identity unavailable');
     writeRecord(file, record);
     while (!fs.existsSync(ready)) {
-      if (failed || Date.now() >= deadline) throw new Error(`Windows process containment could not be established: ${diagnostic.trim() || 'startup deadline exceeded'}`);
+      if (failed || Date.now() >= deadline) throw new Error(`Windows process containment could not be established: ${diagnostic.trim() || fs.readFileSync(log, 'utf8').trim().slice(-4000) || 'startup deadline exceeded'}`);
       await new Promise(resolve => setTimeout(resolve, 25));
     }
   }
