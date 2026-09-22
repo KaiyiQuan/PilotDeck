@@ -1,11 +1,11 @@
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useWorkspaceUpload } from './useWorkspaceUpload';
-const mocks = vi.hoisted(() => ({ limits: vi.fn(), upload: vi.fn(), t: (key: string) => key }));
-vi.mock('../../utils/api', () => ({ api: { uploadLimits: mocks.limits, uploadFiles: mocks.upload } }));
+const mocks = vi.hoisted(() => ({ limits: vi.fn(), check: vi.fn(), upload: vi.fn(), t: (key: string) => key }));
+vi.mock('../../utils/api', () => ({ api: { uploadLimits: mocks.limits, uploadFiles: mocks.upload, checkWorkspaceUpload: mocks.check } }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: mocks.t }) }));
 const limits = { maxFiles: 500, maxFileBytes: 1024 ** 3, maxTaskBytes: 2 * 1024 ** 3 };
-beforeEach(() => { mocks.limits.mockReset().mockResolvedValue({ ok: true, json: async () => limits }); mocks.upload.mockReset(); });
+beforeEach(() => { mocks.limits.mockReset().mockResolvedValue({ ok: true, json: async () => limits }); mocks.upload.mockReset(); mocks.check.mockReset().mockResolvedValue({ ok: true, json: async () => ({ success: true }) }); });
 afterEach(cleanup);
 const file = (name: string) => new File(['hello'], name);
 const success = (files: File[]) => ({ ok: true, body: { files: files.map(f => ({ name: f.name, size: f.size })), errors: [] } });
@@ -32,6 +32,24 @@ describe('workspace upload state', () => {
     expect(result.current.upload?.stage).toBe('failed'); expect(result.current.upload?.retryFiles).toEqual([]);
     expect(mocks.upload).not.toHaveBeenCalled();
   });
+  it('does not send file contents when preflight finds an existing destination', async () => {
+    mocks.check.mockResolvedValue({ ok: false, status: 409, json: async () => ({ error: { code: 'UPLOAD_FILE_EXISTS' }, conflicts: ['a.txt'] }) });
+    const { result } = renderHook(() => useWorkspaceUpload('project', vi.fn()));
+    await act(async () => { await result.current.start([file('a.txt')], 'docs'); });
+    expect(mocks.check).toHaveBeenCalledWith('project', { targetPath: 'docs', relativePaths: ['a.txt'] }, expect.any(AbortSignal));
+    expect(result.current.upload).toMatchObject({ stage: 'failed', uploadedBytes: 0, retryFiles: [], error: 'fileTree.uploadStatus.fileExists' });
+    expect(mocks.upload).not.toHaveBeenCalled();
+  });
+
+  it('shows a late name conflict as a failure and excludes it from retry', async () => {
+    mocks.upload.mockResolvedValue({ ok: true, body: { files: [], errors: [{ name: 'a.txt', code: 'UPLOAD_FILE_EXISTS', message: 'exists' }] } });
+    const refresh = vi.fn();
+    const { result } = renderHook(() => useWorkspaceUpload('project', refresh));
+    await act(async () => { await result.current.start([file('a.txt')]); });
+    expect(result.current.upload).toMatchObject({ stage: 'failed', retryFiles: [], error: 'fileTree.uploadStatus.fileExists' });
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
   it('retries only failed files in their original target directory', async () => {
     const a = file('a.txt'); const b = file('b.txt');
     mocks.upload.mockResolvedValueOnce({ ok: true, body: { files: [{ name: 'a.txt', size: 5 }], errors: [{ name: 'b.txt', message: 'denied' }] } }).mockResolvedValueOnce(success([b]));

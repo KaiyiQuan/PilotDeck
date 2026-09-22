@@ -9,7 +9,7 @@ export function WorkspaceUploadStatus({ upload, onCancel, onRetry, onDismiss }: 
   if (!upload) return null;
   const { stage, files, percent, savedNames, failures } = upload;
   const busy = ['preparing', 'uploading', 'saving'].includes(stage);
-  const status = t(`fileTree.uploadStatus.${stage}`, { count: stage === 'failed' ? upload.retryFiles.length || files.length : files.length });
+  const status = t(`fileTree.uploadStatus.${stage}`, { count: stage === 'failed' ? failures.length || upload.retryFiles.length || files.length : files.length });
   return (
     <section className="workspace-upload" data-stage={stage} aria-label={t('fileTree.uploadStatus.label')}>
       <div className="workspace-upload-heading">
@@ -35,7 +35,7 @@ export function WorkspaceUploadStatus({ upload, onCancel, onRetry, onDismiss }: 
         <ul>{files.map(file => {
           const name = uploadFileName(file);
           const failure = failures.find(item => item.name === name);
-          return <li key={name}><span className="workspace-upload-name" title={name}>{name}</span><span>{failure?.message || (savedNames.includes(name) ? t('fileTree.uploadStatus.saved') : t('fileTree.uploadStatus.inBatch'))}</span></li>;
+          return <li key={name}><span className="workspace-upload-name" title={name}>{name}</span><span>{failure?.message || (savedNames.includes(name) ? t('fileTree.uploadStatus.saved') : t(stage === 'failed' && upload.uploadedBytes === 0 ? 'fileTree.uploadStatus.notUploaded' : 'fileTree.uploadStatus.inBatch'))}</span></li>;
         })}</ul>
       </details>}
     </section>

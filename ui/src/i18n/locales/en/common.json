@@ -371,6 +371,9 @@
   },
   "fileTree": {
     "uploadStatus": {
+      "fileExists": "A file or folder named {{name}} already exists in the destination. Rename it before uploading.",
+      "batchNotStarted": "No files in this batch have been uploaded.",
+      "notUploaded": "Not uploaded",
       "label": "File upload status",
       "preparing": "Checking files…",
       "uploading": "Uploading {{count}} files",

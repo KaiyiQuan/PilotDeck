@@ -5,7 +5,7 @@ import * as fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import { createWorkspaceFileUploadHandler } from './workspaceFileUpload.js';
+import { createWorkspaceFileUploadHandler, createWorkspaceUploadCheckHandler, publishWorkspaceFile } from './workspaceFileUpload.js';
 import { readUploadLimits } from './uploadLimits.js';
 
 const cleanups = [];
@@ -14,6 +14,8 @@ async function fixture(overrides = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pd-workspace-test-'));
   cleanups.push(() => fs.rm(root, { recursive: true, force: true }));
   const app = express();
+  app.use(express.json());
+  app.post('/check', createWorkspaceUploadCheckHandler({ resolveProject: async () => root, getLimits: () => ({ ...readUploadLimits({}), ...overrides }) }));
   app.post('/upload', createWorkspaceFileUploadHandler({ resolveProject: async () => root, getLimits: () => ({ ...readUploadLimits({}), ...overrides }) }));
   const server = app.listen(0, '127.0.0.1');
   await new Promise(resolve => server.once('listening', resolve));
@@ -31,7 +33,11 @@ async function fixture(overrides = {}) {
   async function cleanStaging() {
     await vi.waitFor(async () => expect(await fs.readdir(path.join(root, '.tmp'))).toEqual([]));
   }
-  return { root, send, url, cleanStaging };
+  const check = async (relativePaths, targetPath = '') => {
+    const response = await fetch(url.replace('/upload', '/check'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ targetPath, relativePaths }) });
+    return { status: response.status, body: await response.json() };
+  };
+  return { root, send, check, url, cleanStaging };
 }
 const file = (name, text = 'hello') => ({ name, bytes: Buffer.from(text) });
 
@@ -46,15 +52,78 @@ describe('workspace uploads', () => {
     await f.cleanStaging();
   }, 15000);
 
-  it('accepts 21 files, preserving nested paths and overwriting a complete file', async () => {
+  it('accepts 21 files, preserving nested paths', async () => {
     const f = await fixture();
-    await fs.writeFile(path.join(f.root, 'existing.txt'), 'old');
-    expect((await f.send([file('existing.txt', 'new')])).status).toBe(200);
-    expect(await fs.readFile(path.join(f.root, 'existing.txt'), 'utf8')).toBe('new');
     const result = await f.send(Array.from({ length: 21 }, (_, i) => file(`folder/${i}.txt`)), 'target');
     expect(result.body.files).toHaveLength(21);
     expect(await fs.readFile(path.join(f.root, 'target/folder/20.txt'), 'utf8')).toBe('hello');
     await f.cleanStaging();
+  });
+
+  it('checks the actual destination before upload without creating directories', async () => {
+    const f = await fixture();
+    await fs.mkdir(path.join(f.root, 'docs'));
+    await fs.writeFile(path.join(f.root, 'docs/slides.pptx'), 'original');
+    const conflict = await f.check(['slides.pptx'], 'docs');
+    expect(conflict.status).toBe(409);
+    expect(conflict.body).toMatchObject({ error: { code: 'UPLOAD_FILE_EXISTS' }, conflicts: ['slides.pptx'] });
+    expect((await f.check(['slides.pptx'])).status).toBe(200);
+    expect((await f.check(['slides.pptx'], 'other')).status).toBe(200);
+    expect(await fs.readdir(f.root)).toEqual(['docs']);
+    expect((await f.check(['../escape.txt'])).status).toBe(400);
+  });
+
+  it('rejects existing files even when the client bypasses preflight', async () => {
+    const f = await fixture();
+    await fs.writeFile(path.join(f.root, 'existing.txt'), 'original');
+    const result = await f.send([file('existing.txt', 'replacement')]);
+    expect(result.body.success).toBe(false);
+    expect(result.body.files).toEqual([]);
+    expect(result.body.errors).toEqual([{ name: 'existing.txt', code: 'UPLOAD_FILE_EXISTS', message: expect.any(String) }]);
+    expect(await fs.readFile(path.join(f.root, 'existing.txt'), 'utf8')).toBe('original');
+    await f.cleanStaging();
+  });
+
+  it('treats directories and dangling symlinks as name conflicts', async () => {
+    const f = await fixture();
+    await fs.mkdir(path.join(f.root, 'folder'));
+    await fs.symlink(path.join(f.root, 'missing'), path.join(f.root, 'link'));
+    const checked = await f.check(['folder', 'link']);
+    expect(checked.body.conflicts).toEqual(['folder', 'link']);
+    const result = await f.send([file('folder'), file('link')]);
+    expect(result.body.errors.map(error => error.code)).toEqual(['UPLOAD_FILE_EXISTS', 'UPLOAD_FILE_EXISTS']);
+    expect((await fs.lstat(path.join(f.root, 'folder'))).isDirectory()).toBe(true);
+    expect((await fs.lstat(path.join(f.root, 'link'))).isSymbolicLink()).toBe(true);
+    await f.cleanStaging();
+  });
+
+  it('only publishes one of two concurrent uploads to the same destination', async () => {
+    const f = await fixture();
+    expect((await f.check(['same.txt'])).status).toBe(200);
+    expect((await f.check(['same.txt'])).status).toBe(200);
+    const results = await Promise.all([f.send([file('same.txt', 'first')]), f.send([file('same.txt', 'second')])]);
+    expect(results.filter(result => result.body.success)).toHaveLength(1);
+    expect(results.find(result => !result.body.success).body.errors[0].code).toBe('UPLOAD_FILE_EXISTS');
+    const winner = results[0].body.success ? 'first' : 'second';
+    expect(await fs.readFile(path.join(f.root, 'same.txt'), 'utf8')).toBe(winner);
+    await f.cleanStaging();
+  });
+
+  it.each([false, true])('publishes across devices without overwriting a race winner (collision=%s)', async collision => {
+    const f = await fixture();
+    const source = path.join(f.root, 'source');
+    const destination = path.join(f.root, 'destination');
+    await fs.writeFile(source, 'upload');
+    const link = vi.fn().mockRejectedValueOnce(Object.assign(new Error('cross device'), { code: 'EXDEV' }))
+      .mockImplementationOnce(async (temporary, target) => {
+        if (collision) await fs.writeFile(target, 'race winner');
+        return fs.link(temporary, target);
+      });
+    const publishing = publishWorkspaceFile(source, destination, new AbortController().signal, { ...fs, link });
+    if (collision) await expect(publishing).rejects.toMatchObject({ code: 'EEXIST' });
+    else await publishing;
+    expect(await fs.readFile(destination, 'utf8')).toBe(collision ? 'race winner' : 'upload');
+    expect((await fs.readdir(f.root)).filter(name => name.startsWith('.pilotdeck-upload-'))).toEqual([]);
   });
 
   it.each([

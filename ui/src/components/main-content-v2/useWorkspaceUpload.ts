@@ -73,6 +73,19 @@ export function useWorkspaceUpload(projectName: string | undefined, refreshFiles
       if (new Set(files.map(uploadFileName)).size !== files.length) validationError = t('fileTree.uploadStatus.duplicateNames');
       if (validationError) { preflightFailed = true; throw new Error(validationError); }
       if (!current() || controller.signal.aborted) return;
+      const check = await api.checkWorkspaceUpload(projectName, { targetPath, relativePaths: files.map(uploadFileName) }, controller.signal);
+      const checked = await check.json();
+      if (!current() || controller.signal.aborted) return;
+      if (!check.ok) {
+        if (checked.error?.code === 'UPLOAD_FILE_EXISTS' && Array.isArray(checked.conflicts) && checked.conflicts.length) {
+          preflightFailed = true;
+          update({ failures: checked.conflicts.map((name: string) => ({ name, message: t('fileTree.uploadStatus.fileExists', { name }) })) });
+          throw new Error(t('fileTree.uploadStatus.fileExists', { name: checked.conflicts[0] })
+            + (files.length > 1 ? ` ${t('fileTree.uploadStatus.batchNotStarted')}` : ''));
+        }
+        throw new Error(checked.error?.message || t('fileTree.uploadStatus.httpError', { status: check.status }));
+      }
+      if (checked.success !== true) throw new Error(t('fileTree.uploadStatus.invalidResponse'));
       const formData = new FormData();
       formData.append('targetPath', targetPath);
       formData.append('relativePaths', JSON.stringify(files.map(uploadFileName)));
@@ -92,14 +105,19 @@ export function useWorkspaceUpload(projectName: string | undefined, refreshFiles
       }
       const saved = Array.isArray(result.body.files) ? result.body.files : [];
       const savedNames = files.filter(file => saved.some((item: { name: string; size: number }) => item.name === uploadFileName(file) && item.size === file.size)).map(uploadFileName);
-      const retryFiles = files.filter(file => !savedNames.includes(uploadFileName(file)));
+      const failedFiles = files.filter(file => !savedNames.includes(uploadFileName(file)));
       const errors = Array.isArray(result.body.errors) ? result.body.errors : [];
-      const failures = retryFiles.map(file => ({
+      const failureFor = (file: File) => errors.find((error: { name: string }) => error.name === uploadFileName(file));
+      const retryFiles = failedFiles.filter(file => failureFor(file)?.code !== 'UPLOAD_FILE_EXISTS');
+      const failures = failedFiles.map(file => ({
         name: uploadFileName(file),
-        message: errors.find((error: { name: string }) => error.name === uploadFileName(file))?.message || t('fileTree.uploadStatus.invalidResponse'),
+        message: failureFor(file)?.code === 'UPLOAD_FILE_EXISTS'
+          ? t('fileTree.uploadStatus.fileExists', { name: uploadFileName(file) })
+          : failureFor(file)?.message || t('fileTree.uploadStatus.invalidResponse'),
       }));
-      update({ stage: retryFiles.length ? 'failed' : 'completed', savedNames, failures, retryFiles, percent: 100, uploadedBytes: totalBytes,
-        error: retryFiles.length ? t('fileTree.uploadStatus.partial', { failed: retryFiles.length, saved: savedNames.length }) : undefined });
+      update({ stage: failedFiles.length ? 'failed' : 'completed', savedNames, failures, retryFiles, percent: 100, uploadedBytes: totalBytes,
+        error: failedFiles.length ? (files.length === 1 ? failures[0].message
+          : t('fileTree.uploadStatus.partial', { failed: failedFiles.length, saved: savedNames.length })) : undefined });
       if (savedNames.length) refreshFiles();
     } catch (error) {
       if (!current()) return;

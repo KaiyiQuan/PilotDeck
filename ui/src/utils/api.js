@@ -407,6 +407,11 @@ export const api = {
 
   uploadLimits: (signal) => authenticatedFetch('/api/uploads/limits', { signal }),
 
+  checkWorkspaceUpload: (projectName, manifest, signal) =>
+    authenticatedFetch(`/api/projects/${encodeURIComponent(projectName)}/files/upload/check`, {
+      method: 'POST', body: JSON.stringify(manifest), signal,
+    }),
+
   uploadFiles: (projectName, formData, options) => postFormDataWithProgress({
     ...options,
     url: `/api/projects/${encodeURIComponent(projectName)}/files/upload`,

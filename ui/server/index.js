@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { createWorkspaceFileUploadHandler } from './services/workspaceFileUpload.js';
+import { createWorkspaceFileUploadHandler, createWorkspaceUploadCheckHandler } from './services/workspaceFileUpload.js';
 import { createBackgroundSessionForwarder, createSessionActivityRegistry } from './session-activity.js';
 import '../../scripts/check-node-runtime.mjs';
 // Load environment variables before other imports execute
@@ -2228,6 +2228,9 @@ app.delete('/api/projects/:projectName/files', authenticateToken, requireRealPro
 });
 
 const uploadFilesHandler = createWorkspaceFileUploadHandler({ resolveProject: extractProjectDirectory });
+
+app.post('/api/projects/:projectName/files/upload/check', authenticateToken, requireRealProjectFilesystem,
+    createWorkspaceUploadCheckHandler({ resolveProject: extractProjectDirectory }));
 
 app.post('/api/projects/:projectName/files/upload', authenticateToken, requireRealProjectFilesystem, uploadFilesHandler);
 

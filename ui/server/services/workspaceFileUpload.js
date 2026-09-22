@@ -1,7 +1,7 @@
 import multer from 'multer';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { createWriteStream } from 'node:fs';
+import { constants, createWriteStream } from 'node:fs';
 import * as fs from 'node:fs/promises';
 import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -34,6 +34,68 @@ async function ensureDirectory(root, relative) {
     }
   }
   return current;
+}
+
+// lstat also catches dangling symlinks. Inspect parents without creating them
+// or following directory symlinks during the preflight check.
+async function destinationExists(root, relative) {
+  let current = root;
+  const parts = relative.split('/');
+  for (let i = 0; i < parts.length; i++) {
+    current = path.join(current, parts[i]);
+    let info;
+    try { info = await fs.lstat(current); }
+    catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+    if (i === parts.length - 1) return true;
+    if (info.isSymbolicLink() || !info.isDirectory()) {
+      throw uploadError('UPLOAD_INVALID_PATH', 'Destination contains a symlink or is not a directory.');
+    }
+  }
+  return false;
+}
+
+export function createWorkspaceUploadCheckHandler({ resolveProject, getLimits = readUploadLimits }) {
+  return async (req, res) => {
+    try {
+      const root = await fs.realpath(await resolveProject(req.params.projectName));
+      const target = relativePath(req.body?.targetPath || '', true);
+      const input = req.body?.relativePaths;
+      if (!Array.isArray(input) || input.length < 1 || input.length > getLimits().maxFiles) {
+        throw uploadError('UPLOAD_MANIFEST_INVALID', 'Invalid file list.');
+      }
+      const names = input.map(name => relativePath(name));
+      if (new Set(names).size !== names.length) throw uploadError('UPLOAD_MANIFEST_INVALID', 'Duplicate destination paths.');
+      const conflicts = [];
+      for (const name of names) {
+        if (await destinationExists(root, path.posix.join(target, name))) conflicts.push(name);
+      }
+      if (conflicts.length) {
+        return res.status(409).json({ error: { code: 'UPLOAD_FILE_EXISTS', message: 'Destination already exists. Rename the file before uploading.' }, conflicts });
+      }
+      return res.json({ success: true });
+    } catch (error) {
+      return res.status(error.status || 500).json({ error: { code: error.code || 'UPLOAD_FAILED', message: error.message } });
+    }
+  };
+}
+
+// Creating a hard link publishes a complete file atomically and fails with
+// EEXIST if any file, directory, or symlink already occupies the destination.
+// Unlike an exists-check followed by rename, this also protects concurrent uploads.
+export async function publishWorkspaceFile(source, destination, signal, io = fs) {
+  try {
+    await io.link(source, destination);
+  } catch (error) {
+    if (error.code !== 'EXDEV') throw error;
+    const temporary = path.join(path.dirname(destination), `.pilotdeck-upload-${randomUUID()}`);
+    try {
+      await io.copyFile(source, temporary, constants.COPYFILE_EXCL);
+      if (signal.aborted) throw uploadError('UPLOAD_CANCELLED', 'Upload cancelled.');
+      await io.link(temporary, destination);
+    } finally {
+      await io.rm(temporary, { force: true }).catch(error => console.warn('[workspace-upload] Temporary file cleanup failed:', error.message));
+    }
+  }
 }
 
 export function createWorkspaceFileUploadHandler({ resolveProject, getLimits = readUploadLimits }) {
@@ -122,24 +184,15 @@ export function createWorkspaceFileUploadHandler({ resolveProject, getLimits = r
         const name = names[i];
         const relative = path.posix.join(target, name);
         const destination = path.join(root, relative);
-        let fallback;
         try {
           // Recheck parents immediately before publishing the staged file.
           await ensureDirectory(root, path.posix.dirname(relative) === '.' ? '' : path.posix.dirname(relative));
-          await fs.rename(file.path, destination).catch(async error => {
-            if (error.code !== 'EXDEV') throw error;
-            // A mounted subdirectory may be on another device: copy beside the
-            // destination, then rename so readers never see a half-written file.
-            fallback = path.join(path.dirname(destination), `.pilotdeck-upload-${randomUUID()}`);
-            await fs.copyFile(file.path, fallback);
-            if (controller.signal.aborted) throw uploadError('UPLOAD_CANCELLED', 'Upload cancelled.');
-            await fs.rename(fallback, destination);
-          });
+          await publishWorkspaceFile(file.path, destination, controller.signal);
           saved.push({ name, path: destination, size: file.size, mimeType: file.mimetype });
         } catch (error) {
-          errors.push({ name, code: error.code || 'UPLOAD_SAVE_FAILED', message: error.message });
-        } finally {
-          if (fallback) await fs.rm(fallback, { force: true }).catch(() => {});
+          errors.push(error.code === 'EEXIST'
+            ? { name, code: 'UPLOAD_FILE_EXISTS', message: 'Destination already exists. Rename the file before uploading.' }
+            : { name, code: error.code || 'UPLOAD_SAVE_FAILED', message: error.message });
         }
       }
       if (!controller.signal.aborted) res.status(errors.length ? 207 : 200).json({ success: errors.length === 0, files: saved, errors, targetPath: path.join(root, target) });

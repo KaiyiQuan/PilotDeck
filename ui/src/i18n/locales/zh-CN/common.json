@@ -369,6 +369,9 @@
   },
   "fileTree": {
     "uploadStatus": {
+      "fileExists": "目标目录已存在同名文件或文件夹：{{name}}。请重命名后重新上传。",
+      "batchNotStarted": "本批文件尚未上传。",
+      "notUploaded": "未上传",
       "label": "文件上传状态",
       "preparing": "正在检查文件…",
       "uploading": "正在上传 {{count}} 个文件",
