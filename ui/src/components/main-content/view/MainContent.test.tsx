@@ -358,6 +358,44 @@ afterEach(() => {
 });
 
 describe('MainContent file workspace routing', () => {
+  it('resizes along the visible vertical axis when a horizontal preference falls back to a narrow overlay', async () => {
+    localStorage.setItem('pilotdeck:files-panel-layout', 'horizontal');
+    const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({ x: 0, y: 0, left: 0, right: 900, top: 0, bottom: 900, width: 900, height: 900, toJSON() {} });
+    try {
+      render(<MainContent {...propsFor('files')} />);
+      fireEvent.click(await screen.findByRole('button', { name: /filesWorkbench\.fileDirectory|^Files$/ }));
+      const separator = await screen.findByRole('separator', { name: /filesWorkbench.resizeVerticalPanels|Resize upper and lower panels/ });
+      fireEvent.mouseDown(separator, { clientX: 100, clientY: 450 });
+      fireEvent.mouseMove(document, { clientX: 100, clientY: 540 });
+      fireEvent.mouseUp(document);
+      expect(separator.getAttribute('aria-valuenow')).toBe('60');
+    } finally { rect.mockRestore(); }
+  });
+
+  it('uses switchable full-height panes in a short window and restores the split after resizing', async () => {
+    let height = 500;
+    const callbacks: Array<() => void> = [];
+    vi.stubGlobal('ResizeObserver', class { constructor(callback: () => void) { callbacks.push(callback); } observe() {} disconnect() {} });
+    const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(() => ({ x: 0, y: 0, left: 0, right: 1200, top: 0, bottom: height, width: 1200, height, toJSON() {} }));
+    try {
+      const { container } = render(<MainContent {...propsFor('files')} />);
+      const files = await screen.findByRole('button', { name: /filesWorkbench\.fileDirectory|^Files$/ });
+      const chat = screen.getByRole('button', { name: /filesWorkbench\.smartChat|Smart Chat/ });
+      fireEvent.click(files);
+      await waitFor(() => expect(container.querySelector('[data-files-dock-panel="explorer"]')).not.toBeNull());
+      expect(files.getAttribute('aria-pressed')).toBe('true');
+      expect(chat.getAttribute('aria-pressed')).toBe('false');
+      expect(screen.queryByRole('separator', { name: /filesWorkbench.resizeVerticalPanels|Resize upper and lower panels/ })).toBeNull();
+      fireEvent.click(chat);
+      expect(container.querySelector('[data-files-dock-panel="explorer"]')).toBeNull();
+      expect(chat.getAttribute('aria-pressed')).toBe('true');
+      height = 900;
+      act(() => callbacks.forEach(callback => callback()));
+      await waitFor(() => expect(container.querySelector('[data-files-dock-panel="explorer"]')).not.toBeNull());
+      expect(screen.getByRole('separator', { name: /filesWorkbench.resizeVerticalPanels|Resize upper and lower panels/ })).toBeTruthy();
+    } finally { rect.mockRestore(); }
+  });
+
   it('routes every chat file open into the Files workbench', async () => {
     const setActiveTab = vi.fn();
     const { rerender } = render(<MainContent {...propsFor('files', setActiveTab)} />);

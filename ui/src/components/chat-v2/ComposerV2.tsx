@@ -1,4 +1,5 @@
 import { createPortal } from "react-dom";
+import { useFloatingPanel } from "../ui/useFloatingPanel";
 import { useModelMenuLayout } from "./useModelMenuLayout";
 import { useTranslation } from "react-i18next";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -268,7 +269,6 @@ const PERMISSION_MODE_OPTIONS: PermissionModeOption[] = [
   },
 ];
 
-const ADD_MENU_PREFERRED_MAX_HEIGHT = 400;
 
 const COMPOSER_RUN_MODE_OPTIONS: Array<{
   mode: Extract<ChatRunMode, "plan" | "ask">;
@@ -572,8 +572,13 @@ export default function ComposerV2({
   const [skills, setSkills] = useState<ComposerSkill[]>([]);
   const [isSkillsLoading, setIsSkillsLoading] = useState(false);
   const directoryInputRef = useRef<HTMLInputElement>(null);
-  const addMenuRef = useRef<HTMLDivElement>(null);
-  const [addMenuMaxHeight, setAddMenuMaxHeight] = useState<number | null>(null);
+  const addTriggerRef = useRef<HTMLButtonElement>(null);
+  const permissionTriggerRef = useRef<HTMLButtonElement>(null);
+  const contextTriggerRef = useRef<HTMLButtonElement>(null);
+  const addMenu = useFloatingPanel(isAddMenuOpen, addTriggerRef, () => setIsAddMenuOpen(false), { matchComposer: true });
+  const permissionMenu = useFloatingPanel(isPermissionMenuOpen, permissionTriggerRef, () => setIsPermissionMenuOpen(false), { width: 220 });
+  const contextMenu = useFloatingPanel(isContextPopoverOpen, contextTriggerRef, () => setIsContextPopoverOpen(false), { width: 256 });
+  const fileMenu = useFloatingPanel(showFileDropdown, textareaRef, undefined, { matchComposer: true, maxHeight: 320 });
   const permissionSelectorDisabled = runMode === "plan";
   const [workspaceMenuForceOpen, setWorkspaceMenuForceOpen] = useState(false);
 
@@ -582,27 +587,6 @@ export default function ComposerV2({
       setIsPermissionMenuOpen(false);
     }
   }, [permissionSelectorDisabled]);
-
-  useLayoutEffect(() => {
-    if (!isAddMenuOpen) {
-      setAddMenuMaxHeight(null);
-      return undefined;
-    }
-
-    const updateAddMenuMaxHeight = () => {
-      const menu = addMenuRef.current;
-      if (!menu) return;
-      const header = document.querySelector(".workspace-header");
-      const headerBottom =
-        header instanceof HTMLElement ? header.getBoundingClientRect().bottom : 0;
-      const available = Math.floor(menu.getBoundingClientRect().bottom - headerBottom);
-      setAddMenuMaxHeight(Math.min(ADD_MENU_PREFERRED_MAX_HEIGHT, Math.max(1, available)));
-    };
-
-    updateAddMenuMaxHeight();
-    window.addEventListener("resize", updateAddMenuMaxHeight);
-    return () => window.removeEventListener("resize", updateAddMenuMaxHeight);
-  }, [isAddMenuOpen]);
 
   useEffect(() => {
     if (!isAddMenuOpen || !projectKey) return;
@@ -799,7 +783,7 @@ export default function ComposerV2({
     <div
       className={cn(
         "min-w-0 shrink-0",
-        chromeless ? "" : "bg-white px-6 pb-6 pt-3 dark:bg-neutral-950",
+        chromeless ? "" : compact ? "bg-white px-3 pb-3 pt-2 dark:bg-neutral-950" : "bg-white px-6 pb-6 pt-3 dark:bg-neutral-950",
       )}
     >
       <div className={cn("min-w-0", chromeless ? "" : "mx-auto max-w-[860px]")}>
@@ -888,8 +872,8 @@ export default function ComposerV2({
               </div>
             ) : null}
 
-            {showFileDropdown ? (
-              <div className="absolute bottom-full left-0 right-0 z-50 mb-2 overflow-hidden rounded-xl border border-violet-200 bg-white p-2 shadow-xl shadow-violet-950/10 dark:border-violet-900/70 dark:bg-neutral-900">
+            {showFileDropdown ? createPortal(
+              <div ref={fileMenu.panelRef} style={fileMenu.style} className="flex flex-col overflow-hidden rounded-xl border border-violet-200 bg-white p-2 shadow-xl shadow-violet-950/10 dark:border-violet-900/70 dark:bg-neutral-900">
                 <div className="flex items-center justify-between px-2 pb-2 pt-1">
                   <span className="text-[12px] font-bold text-neutral-900 dark:text-neutral-100">
                     {t("input.projectFiles", { defaultValue: "Reference project content" })}
@@ -905,7 +889,7 @@ export default function ComposerV2({
                       defaultValue: "Project content available to reference",
                     }) as string
                   }
-                  className="grid max-h-[238px] gap-px overflow-y-auto [scrollbar-color:#c8c5d5_transparent] [scrollbar-width:thin]"
+                  className="grid min-h-0 max-h-[238px] gap-px overflow-y-auto [scrollbar-color:#c8c5d5_transparent] [scrollbar-width:thin]"
                   onScroll={(event) => {
                     const target = event.currentTarget;
                     if (
@@ -986,7 +970,7 @@ export default function ComposerV2({
                     </>
                   )}
                 </div>
-              </div>
+              </div>, document.body
             ) : null}
 
             <div
@@ -1123,17 +1107,7 @@ export default function ComposerV2({
                 frequentCommands={frequentCommands}
                 query={commandQuery}
                 selectedCommands={selectedCommands}
-                position={(() => {
-                  const ta = textareaRef?.current;
-                  if (!ta) return { top: 0, left: 0, bottom: 90 };
-                  const rect = ta.getBoundingClientRect();
-                  return {
-                    top: rect.top - 8,
-                    left: rect.left,
-                    bottom: window.innerHeight - rect.top + 8,
-                    width: rect.width,
-                  };
-                })()}
+                anchorRef={textareaRef}
               />
 
               <div className="relative">
@@ -1167,18 +1141,9 @@ export default function ComposerV2({
 
               <div className="pd-composer-control-row flex flex-wrap items-center gap-x-2 gap-y-1 px-1 pt-1">
                 <div className="pd-composer-toolbar-left flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
-                  <div
-                    onBlur={(event) => {
-                      const nextTarget = event.relatedTarget as Node | null;
-                      if (
-                        !nextTarget ||
-                        !event.currentTarget.contains(nextTarget)
-                      ) {
-                        setIsAddMenuOpen(false);
-                      }
-                    }}
-                  >
+                  <div>
                     <button
+                      ref={addTriggerRef}
                       type="button"
                       onClick={() => setIsAddMenuOpen((open) => !open)}
                       className={cn(
@@ -1201,24 +1166,15 @@ export default function ComposerV2({
                     >
                       <Plus className="h-4 w-4" strokeWidth={2.25} strokeLinecap="square" strokeLinejoin="miter" />
                     </button>
-                    {isAddMenuOpen ? (
+                    {isAddMenuOpen ? createPortal(
                       <div
-                        ref={addMenuRef}
+                        ref={addMenu.panelRef}
                         role="menu"
-                        style={
-                          addMenuMaxHeight
-                            ? { maxHeight: `${addMenuMaxHeight}px` }
-                            : undefined
-                        }
-                        className="absolute bottom-full left-0 right-0 z-50 mb-2 flex flex-col overflow-hidden rounded-xl border border-violet-200 bg-white p-2 text-left shadow-xl shadow-violet-950/10 dark:border-violet-900/70 dark:bg-neutral-900"
+                        style={addMenu.style}
+                        className="flex flex-col overflow-hidden rounded-xl border border-violet-200 bg-white p-2 text-left shadow-xl shadow-violet-950/10 dark:border-violet-900/70 dark:bg-neutral-900"
                       >
                         <div
                           className="min-h-0 flex-1 overflow-y-auto [scrollbar-color:#cbc9d5_transparent] [scrollbar-width:thin]"
-                          style={
-                            addMenuMaxHeight
-                              ? { maxHeight: `${Math.max(80, addMenuMaxHeight - 56)}px` }
-                              : undefined
-                          }
                         >
                         <button
                           type="button"
@@ -1365,22 +1321,12 @@ export default function ComposerV2({
                             className="h-8 w-full rounded-lg border border-neutral-200 bg-[#f8f7fa] pl-8 pr-2 text-[12px] outline-none focus:border-violet-300 dark:border-neutral-700 dark:bg-neutral-800 dark:focus:border-violet-700"
                           />
                         </div>
-                      </div>
+                      </div>, document.body
                     ) : null}
                   </div>
-                  <div
-                    className="relative"
-                    onBlur={(event) => {
-                      const nextTarget = event.relatedTarget as Node | null;
-                      if (
-                        !nextTarget ||
-                        !event.currentTarget.contains(nextTarget)
-                      ) {
-                        setIsPermissionMenuOpen(false);
-                      }
-                    }}
-                  >
+                  <div className="relative">
                     <button
+                      ref={permissionTriggerRef}
                       type="button"
                       disabled={permissionSelectorDisabled}
                       onClick={() => {
@@ -1388,7 +1334,7 @@ export default function ComposerV2({
                         setIsPermissionMenuOpen((open) => !open);
                       }}
                       className={cn(
-                        "pd-composer-icon-button inline-flex h-8 min-w-28 max-w-[132px] items-center justify-center gap-1.5 rounded-md border px-2 text-[12px] font-medium transition-colors sm:max-w-[190px]",
+                        "pd-composer-permission-button pd-composer-icon-button inline-flex h-8 min-w-28 max-w-[132px] items-center justify-center gap-1.5 rounded-md border px-2 text-[12px] font-medium transition-colors sm:max-w-[190px]",
                         permissionSelectorDisabled
                           ? "cursor-not-allowed border-transparent text-neutral-400 opacity-45 dark:text-neutral-500"
                           : permissionMode === "bypassPermissions"
@@ -1399,11 +1345,8 @@ export default function ComposerV2({
                               )
                             : "border-[#ddd9f3] bg-[#f8f7ff] text-[#5d58b6] dark:border-violet-800 dark:bg-violet-950/40 dark:text-violet-200",
                       )}
-                      title={
-                        t("input.permissions.change", {
-                          defaultValue: "Select permission mode",
-                        }) as string
-                      }
+                      title={selectedPermissionLabel}
+                      aria-label={selectedPermissionLabel}
                       aria-haspopup="menu"
                       aria-expanded={
                         permissionSelectorDisabled
@@ -1426,10 +1369,10 @@ export default function ComposerV2({
                         strokeWidth={2}
                       />
                     </button>
-                    {isPermissionMenuOpen ? (
-                      <div
+                    {isPermissionMenuOpen ? createPortal(
+                      <div ref={permissionMenu.panelRef} style={permissionMenu.style}
                         role="menu"
-                        className="absolute bottom-[44px] left-12 z-[80] w-[184px] rounded-[10px] border border-violet-200 bg-[rgba(255,255,255,.995)] p-[5px] text-left font-sans tracking-normal shadow-xl shadow-violet-950/10 [font-synthesis:none] dark:border-violet-900/70 dark:bg-neutral-900"
+                        className="overflow-y-auto overscroll-contain rounded-[10px] border border-violet-200 bg-[rgba(255,255,255,.995)] p-[5px] text-left font-sans tracking-normal shadow-xl shadow-violet-950/10 [font-synthesis:none] dark:border-violet-900/70 dark:bg-neutral-900"
                       >
                         {PERMISSION_MODE_OPTIONS.map((option) => {
                           const Icon = option.Icon;
@@ -1483,7 +1426,7 @@ export default function ComposerV2({
                             </button>
                           );
                         })}
-                      </div>
+                      </div>, document.body
                     ) : null}
                   </div>
                   {COMPOSER_RUN_MODE_OPTIONS.filter(
@@ -1532,7 +1475,7 @@ export default function ComposerV2({
                     compact && "relative",
                   )}
                 >
-                  <div>
+                  <div className="pd-composer-model-control min-w-0">
                     <button
                       type="button"
                       disabled={!isModelCatalogLoading && modelCatalog.length === 0 && !modelCatalogError}
@@ -1554,7 +1497,7 @@ export default function ComposerV2({
                     >
                       <span className="min-w-0 truncate">{selectedModelLabel}</span>
                       {selectedReasoningLabel && (
-                        <span className="shrink-0 font-normal text-neutral-400 dark:text-neutral-500">
+                        <span className="pd-composer-thinking-label shrink-0 font-normal text-neutral-400 dark:text-neutral-500">
                           {selectedReasoningLabel}
                         </span>
                       )}
@@ -1794,16 +1737,9 @@ export default function ComposerV2({
                     ) : null}
                   </div>
 
-                  <div
-                    className="relative"
-                    onBlur={(event) => {
-                      const nextTarget = event.relatedTarget as Node | null;
-                      if (!nextTarget || !event.currentTarget.contains(nextTarget)) {
-                        setIsContextPopoverOpen(false);
-                      }
-                    }}
-                  >
+                  <div className="pd-composer-context-control relative">
                     <button
+                      ref={contextTriggerRef}
                       type="button"
                       onClick={() => setIsContextPopoverOpen((open) => !open)}
                       className={cn(
@@ -1823,10 +1759,10 @@ export default function ComposerV2({
                       <CircleGauge className="h-4 w-4" strokeWidth={1.75} />
                       <span>{contextStatus.known ? contextStatus.percentLabel : "--"}</span>
                     </button>
-                    {isContextPopoverOpen ? (
-                      <div
+                    {isContextPopoverOpen ? createPortal(
+                      <div ref={contextMenu.panelRef} style={contextMenu.style}
                         role="status"
-                        className="absolute bottom-full right-0 z-50 mb-2 w-64 rounded-lg border border-neutral-200 bg-white p-3 text-left text-[12px] leading-5 text-neutral-700 shadow-lg dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-200"
+                        className="overflow-y-auto overscroll-contain rounded-lg border border-neutral-200 bg-white p-3 text-left text-[12px] leading-5 text-neutral-700 shadow-lg dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-200"
                       >
                         <div className="mb-1 flex items-center justify-between gap-2">
                           <span className="font-medium text-neutral-900 dark:text-neutral-100">
@@ -1865,7 +1801,7 @@ export default function ComposerV2({
                             })}
                           </div>
                         )}
-                      </div>
+                      </div>, document.body
                     ) : null}
                   </div>
 
