@@ -12,6 +12,25 @@ pnpm --filter pilotdeck-desktop dev
 The desktop process starts the existing PilotDeck gateway and UI server as local
 child processes, then opens the packaged Web UI inside an Electron window.
 
+## Windows background behavior
+
+Closing the main window (including Alt+F4) hides it in the Windows notification
+area and keeps the local runtime and tasks running. Click the PilotDeck tray icon
+or choose **Open main window** to restore the same window and its current state.
+Launching the client again also restores the existing instance.
+
+The tray's **Quit** command and **File > Exit** restore the main window and show
+an owned confirmation dialog. Cancel is the default. Confirming stops the managed
+runtime before the application exits; automatic updates use their existing quit
+path without a second confirmation. Tray menus and confirmation text follow the
+application language. macOS and Linux retain their existing close behavior.
+
+Run `node --test apps/desktop/scripts/windows-tray.test.mjs` from the repository
+root for the controller checks. On Windows,
+`node apps/desktop/scripts/verify-windows-tray.cjs` also exercises real Electron
+windows, single-instance activation and process cleanup with an isolated fixture
+runtime and profile. The fixture answers confirmation dialogs programmatically.
+
 ## Packaging
 
 ```bash
