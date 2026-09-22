@@ -1,3 +1,4 @@
+import { postFormDataWithProgress } from './uploadFormData';
 import { IS_PLATFORM } from "../constants/config";
 
 const normalizePathForUrl = (value) => String(value || '').replace(/\\/g, '/');
@@ -404,12 +405,13 @@ export const api = {
       body: JSON.stringify({ path, type }),
     }),
 
-  uploadFiles: (projectName, formData) =>
-    authenticatedFetch(`/api/projects/${projectName}/files/upload`, {
-      method: 'POST',
-      body: formData,
-      headers: {},
-    }),
+  uploadLimits: (signal) => authenticatedFetch('/api/uploads/limits', { signal }),
+
+  uploadFiles: (projectName, formData, options) => postFormDataWithProgress({
+    ...options,
+    url: `/api/projects/${encodeURIComponent(projectName)}/files/upload`,
+    formData,
+  }),
 
   projectPreviewUrl: (projectName, filePath, projectRoot) => {
     const relativePath = getProjectRelativePath(filePath, projectRoot);
