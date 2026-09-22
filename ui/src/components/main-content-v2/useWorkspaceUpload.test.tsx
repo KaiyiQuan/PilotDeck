@@ -37,7 +37,7 @@ describe('workspace upload state', () => {
     const { result } = renderHook(() => useWorkspaceUpload('project', vi.fn()));
     await act(async () => { await result.current.start([file('a.txt')], 'docs'); });
     expect(mocks.check).toHaveBeenCalledWith('project', { targetPath: 'docs', relativePaths: ['a.txt'] }, expect.any(AbortSignal));
-    expect(result.current.upload).toMatchObject({ stage: 'failed', uploadedBytes: 0, retryFiles: [], error: 'fileTree.uploadStatus.fileExists' });
+    expect(result.current.upload).toMatchObject({ stage: 'failed', uploadedBytes: 0, retryFiles: [], errorCode: 'UPLOAD_FILE_EXISTS', error: 'fileTree.uploadStatus.fileExists' });
     expect(mocks.upload).not.toHaveBeenCalled();
   });
 
@@ -46,7 +46,7 @@ describe('workspace upload state', () => {
     const refresh = vi.fn();
     const { result } = renderHook(() => useWorkspaceUpload('project', refresh));
     await act(async () => { await result.current.start([file('a.txt')]); });
-    expect(result.current.upload).toMatchObject({ stage: 'failed', retryFiles: [], error: 'fileTree.uploadStatus.fileExists' });
+    expect(result.current.upload).toMatchObject({ stage: 'failed', retryFiles: [], errorCode: 'UPLOAD_FILE_EXISTS', error: 'fileTree.uploadStatus.fileExists' });
     expect(refresh).not.toHaveBeenCalled();
   });
 

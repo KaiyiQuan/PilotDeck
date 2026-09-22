@@ -13,6 +13,7 @@ export type WorkspaceUpload = {
   savedNames: string[];
   failures: Array<{ name: string; message: string }>;
   error?: string;
+  errorCode?: string;
   retryFiles: File[];
 };
 
@@ -79,9 +80,8 @@ export function useWorkspaceUpload(projectName: string | undefined, refreshFiles
       if (!check.ok) {
         if (checked.error?.code === 'UPLOAD_FILE_EXISTS' && Array.isArray(checked.conflicts) && checked.conflicts.length) {
           preflightFailed = true;
-          update({ failures: checked.conflicts.map((name: string) => ({ name, message: t('fileTree.uploadStatus.fileExists', { name }) })) });
-          throw new Error(t('fileTree.uploadStatus.fileExists', { name: checked.conflicts[0] })
-            + (files.length > 1 ? ` ${t('fileTree.uploadStatus.batchNotStarted')}` : ''));
+          update({ failures: checked.conflicts.map((name: string) => ({ name, message: t('fileTree.uploadStatus.fileExists') })) });
+          throw Object.assign(new Error(t('fileTree.uploadStatus.fileExists')), { code: 'UPLOAD_FILE_EXISTS' });
         }
         throw new Error(checked.error?.message || t('fileTree.uploadStatus.httpError', { status: check.status }));
       }
@@ -112,10 +112,11 @@ export function useWorkspaceUpload(projectName: string | undefined, refreshFiles
       const failures = failedFiles.map(file => ({
         name: uploadFileName(file),
         message: failureFor(file)?.code === 'UPLOAD_FILE_EXISTS'
-          ? t('fileTree.uploadStatus.fileExists', { name: uploadFileName(file) })
+          ? t('fileTree.uploadStatus.fileExists')
           : failureFor(file)?.message || t('fileTree.uploadStatus.invalidResponse'),
       }));
       update({ stage: failedFiles.length ? 'failed' : 'completed', savedNames, failures, retryFiles, percent: 100, uploadedBytes: totalBytes,
+        errorCode: failedFiles.length > 0 && failedFiles.every(file => failureFor(file)?.code === 'UPLOAD_FILE_EXISTS') ? 'UPLOAD_FILE_EXISTS' : undefined,
         error: failedFiles.length ? (files.length === 1 ? failures[0].message
           : t('fileTree.uploadStatus.partial', { failed: failedFiles.length, saved: savedNames.length })) : undefined });
       if (savedNames.length) refreshFiles();
@@ -126,7 +127,7 @@ export function useWorkspaceUpload(projectName: string | undefined, refreshFiles
       } else {
         const message = error instanceof Error ? error.message : String(error);
         const code = (error as { code?: string })?.code || message;
-        update({ stage: 'failed', error: code === 'UPLOAD_NETWORK_ERROR' ? t('fileTree.uploadStatus.networkError')
+        update({ stage: 'failed', errorCode: code, error: code === 'UPLOAD_NETWORK_ERROR' ? t('fileTree.uploadStatus.networkError')
           : code === 'UPLOAD_TIMEOUT' ? t('fileTree.uploadStatus.timeout') : message,
         retryFiles: preflightFailed ? [] : files });
       }

@@ -8,6 +8,20 @@ export function WorkspaceUploadStatus({ upload, onCancel, onRetry, onDismiss }: 
   const { t } = useTranslation();
   if (!upload) return null;
   const { stage, files, percent, savedNames, failures } = upload;
+  if (stage === 'failed' && upload.errorCode === 'UPLOAD_FILE_EXISTS') {
+    return (
+      <section className="workspace-upload" data-stage={stage} aria-label={t('fileTree.uploadStatus.label')}>
+        <div className="workspace-upload-heading">
+          <span className="workspace-upload-title" role="alert">
+            <AlertCircle size={14} aria-hidden="true" />
+            <span>{t('fileTree.uploadStatus.failedTitle')}</span>
+          </span>
+          <button type="button" onClick={onDismiss}>{t('fileTree.uploadStatus.dismiss')}</button>
+        </div>
+        <div className="workspace-upload-meta">{t('fileTree.uploadStatus.fileExists')}</div>
+      </section>
+    );
+  }
   const busy = ['preparing', 'uploading', 'saving'].includes(stage);
   const status = t(`fileTree.uploadStatus.${stage}`, { count: stage === 'failed' ? failures.length || upload.retryFiles.length || files.length : files.length });
   return (
