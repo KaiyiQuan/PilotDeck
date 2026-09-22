@@ -37,7 +37,7 @@ import MainContentStateView from "./subcomponents/MainContentStateView";
 import ConversationSwitcher from "./subcomponents/ConversationSwitcher";
 import ErrorBoundary from "./ErrorBoundary";
 import ToolSidePanel from "./subcomponents/ToolSidePanel";
-import { useWorkspaceUpload, type WorkspaceUploadController } from "../../main-content-v2/useWorkspaceUpload";
+import type { WorkspaceUploadController } from "../../main-content-v2/useWorkspaceUpload";
 
 const AlwaysOnV2 = React.lazy(() => import("../../main-content-v2/AlwaysOnV2"));
 const CronV2 = React.lazy(() => import("../../main-content-v2/CronV2"));
@@ -205,6 +205,7 @@ async function readJsonPayload<T>(response: Response): Promise<T | null> {
 }
 
 function MainContent({
+  workspaceUpload,
   projects,
   selectedProject,
   selectedSession,
@@ -254,8 +255,6 @@ function MainContent({
   const { tasksEnabled, isTaskMasterInstalled } =
     useTasksSettings() as TasksSettingsContextValue;
   const [toast, setToast] = useState<MainContentToast>(null);
-  // Uploads belong to the project, independently of the explorer's visibility.
-  const workspaceUpload = useWorkspaceUpload(selectedProject?.name);
 
   const shouldShowTasksTab = Boolean(tasksEnabled && isTaskMasterInstalled);
 

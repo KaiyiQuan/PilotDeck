@@ -32,6 +32,7 @@ import { getSettingsPathFromTab } from '../settings/navigation';
 import { ConnectionBanner } from '../ui/ConnectionBanner';
 import SidebarV2 from './SidebarV2';
 import MainAreaV2 from './MainAreaV2';
+import { useWorkspaceUpload } from '../main-content-v2/useWorkspaceUpload';
 import {
   chooseDefaultProject,
   resolveHomeNewConversationProject,
@@ -136,6 +137,8 @@ export default function AppShellV2() {
     isMobile,
     activeSessions,
   });
+  // The wildcard route keeps this owner mounted across dedicated pages too.
+  const workspaceUpload = useWorkspaceUpload(selectedProject?.name);
   const workspaceTab = activeTab === 'cron' || activeTab === 'skills' ? 'chat' : activeTab;
   const shellActiveTab = dedicatedTab ?? workspaceTab;
   const { processingSessions: remoteProcessingSessions, unreadSessionIds, markRead, acknowledge, selectSession: acknowledgeNavigation } = useSessionIndicators({
@@ -702,6 +705,7 @@ export default function AppShellV2() {
         className="app-main flex min-h-0 min-w-0 flex-1 flex-col bg-white dark:bg-neutral-950"
       >
         <MainAreaV2
+          workspaceUpload={workspaceUpload}
           projects={sidebarSharedProps.projects}
           selectedProject={selectedProject}
           selectedSession={selectedSession}

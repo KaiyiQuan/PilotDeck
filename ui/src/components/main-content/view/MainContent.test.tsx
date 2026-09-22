@@ -3,23 +3,62 @@ import type { ComponentProps, ReactNode } from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppTab, Project } from '../../../types/app';
-import MainContent from './MainContent';
+import MainContentView from './MainContent';
+import { useWorkspaceUpload } from '../../main-content-v2/useWorkspaceUpload';
+import AppShellV2 from '../../app-shell/AppShellV2';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 
 const mocks = vi.hoisted(() => ({
   handleFileOpen: vi.fn(),
   onMisroutedFileUrlHandled: vi.fn(),
   getFiles: vi.fn(),
   upload: vi.fn(),
+  check: vi.fn(),
+  subscribe: vi.fn(() => () => {}),
 }));
 
 vi.mock('../../../utils/api', () => ({
   api: {
     getFiles: mocks.getFiles,
     uploadLimits: async () => ({ ok: true, json: async () => ({ maxFiles: 500, maxFileBytes: 1024 ** 3, maxTaskBytes: 2 * 1024 ** 3 }) }),
-    checkWorkspaceUpload: async () => ({ ok: true, json: async () => ({ success: true }) }),
+    checkWorkspaceUpload: mocks.check,
     uploadFiles: mocks.upload,
+    alwaysOnDashboardEvents: async () => ({ ok: true, json: async () => ({ events: [] }) }),
   },
 }));
+
+vi.mock('../../auth/context/AuthContext', () => ({ useAuth: () => ({ user: { id: 'test' } }) }));
+vi.mock('../../../contexts/WebSocketContext', () => ({ useWebSocket: () => ({ subscribe: mocks.subscribe, isConnected: false }) }));
+vi.mock('../../../hooks/useDeviceSettings', () => ({ useDeviceSettings: () => ({ isMobile: false }) }));
+vi.mock('../../../hooks/useSessionProtection', () => ({ useSessionProtection: () => ({ activeSessions: new Set(), processingSessions: new Set() }) }));
+vi.mock('../../app-shell/useSessionIndicators', async () => {
+  const { createContext } = await import('react');
+  return { SessionViewReadyContext: createContext(null), useSessionIndicators: () => ({ processingSessions: new Set(), unreadSessionIds: new Set() }) };
+});
+vi.mock('../../../hooks/useProjectsState', async () => {
+  const { useState } = await import('react');
+  return { useProjectsState: () => {
+    const [activeTab, setActiveTab] = useState('files');
+    const [selectedProject, setSelectedProject] = useState(project);
+    return {
+      selectedProject, setSelectedProject, selectedSession: null, activeTab, setActiveTab,
+      sidebarSharedProps: { projects: [project] },
+      setSidebarOpen: vi.fn(), refreshProjectsSilently: vi.fn(),
+    };
+  } };
+});
+vi.mock('../../app-shell/SidebarV2', () => ({ default: ({ onSelectTab }: { onSelectTab: (tab: AppTab) => void }) => (
+  <nav>
+    <button onClick={() => onSelectTab('skills')}>Go to skills</button>
+    <button onClick={() => onSelectTab('cron')}>Go to scheduled tasks</button>
+    <button onClick={() => onSelectTab('files')}>Back to workspace</button>
+  </nav>
+) }));
+vi.mock('../../ui/ConnectionBanner', () => ({ ConnectionBanner: () => null }));
+vi.mock('../../settings/Settings', () => ({ default: () => null }));
+vi.mock('../../onboarding/view/subcomponents/CreateWorkspaceModal', () => ({ default: () => null }));
+vi.mock('../../main-content-v2/SkillsV2', () => ({ default: () => <div data-testid="skills-page" /> }));
+vi.mock('../../main-content-v2/CronV2', () => ({ default: () => <div data-testid="cron-page" /> }));
 
 vi.mock('../../../contexts/TaskMasterContext', () => ({
   useTaskMaster: () => ({
@@ -117,6 +156,12 @@ const project: Project = {
   fullPath: '/workspace/PilotDeck',
 };
 
+// Standalone layout tests use a persistent owner, as AppShellV2 does in the app.
+function MainContent(props: Omit<ComponentProps<typeof MainContentView>, 'workspaceUpload'>) {
+  const workspaceUpload = useWorkspaceUpload(props.selectedProject?.name);
+  return <MainContentView {...props} workspaceUpload={workspaceUpload} />;
+}
+
 function propsFor(activeTab: AppTab, setActiveTab = vi.fn()) {
   return {
     projects: [project],
@@ -152,6 +197,92 @@ beforeEach(() => {
   mocks.onMisroutedFileUrlHandled.mockReset();
   mocks.getFiles.mockReset().mockResolvedValue({ ok: true, json: async () => [] });
   mocks.upload.mockReset();
+  mocks.check.mockReset().mockResolvedValue({ ok: true, json: async () => ({ success: true }) });
+});
+
+function RouteLocation() {
+  return <div data-testid="route-location">{useLocation().pathname}</div>;
+}
+
+describe('AppShell upload lifetime across dedicated routes', () => {
+  async function openExplorer() {
+    const toggle = await screen.findByRole('button', { name: /filesWorkbench\.fileDirectory|^Files$/ });
+    if (toggle.getAttribute('aria-pressed') !== 'true') fireEvent.click(toggle);
+  }
+
+  async function startShellUpload(files = [new File(['upload contents'], 'large.txt')]) {
+    const view = render(<MemoryRouter initialEntries={['/p/pilotdeck']}><AppShellV2 /><RouteLocation /></MemoryRouter>);
+    await openExplorer();
+    await waitFor(() => expect(view.container.querySelector('input[type="file"]')).not.toBeNull());
+    fireEvent.change(view.container.querySelector('input[type="file"]')!, { target: { files } });
+    await waitFor(() => expect(mocks.check).toHaveBeenCalledOnce());
+    return { ...view, files };
+  }
+
+  it.each([
+    ['skills', 'skills-page', 'preparing'],
+    ['skills', 'skills-page', 'uploading'],
+    ['scheduled tasks', 'cron-page', 'preparing'],
+    ['scheduled tasks', 'cron-page', 'uploading'],
+  ])('keeps uploads alive on %s (%s) during %s', async (route, page, phase) => {
+    let finishCheck!: (value: unknown) => void;
+    let finishUpload!: (value: unknown) => void;
+    if (phase === 'preparing') mocks.check.mockImplementation(() => new Promise(resolve => { finishCheck = resolve; }));
+    mocks.upload.mockImplementation(() => new Promise(resolve => { finishUpload = resolve; }));
+    const { files, container } = await startShellUpload();
+    if (phase === 'uploading') await waitFor(() => expect(mocks.upload).toHaveBeenCalledOnce());
+    const signal = mocks.check.mock.calls[0][2];
+    fireEvent.click(screen.getByRole('button', { name: `Go to ${route}` }));
+    expect(await screen.findByTestId(page)).toBeTruthy();
+    expect(screen.getByTestId('route-location').textContent).not.toBe('/p/pilotdeck');
+    expect(container.querySelector('input[type="file"]')).toBeNull();
+    expect(signal.aborted).toBe(false);
+    if (phase === 'preparing') await act(async () => finishCheck({ ok: true, json: async () => ({ success: true }) }));
+    await waitFor(() => expect(mocks.upload).toHaveBeenCalledOnce());
+    act(() => mocks.upload.mock.calls[0][2].onProgress(45));
+    fireEvent.click(screen.getByRole('button', { name: 'Back to workspace' }));
+    await openExplorer();
+    expect((await screen.findByRole('progressbar')).getAttribute('aria-valuenow')).toBe('45');
+    expect(screen.getByTestId('route-location').textContent).toBe('/p/pilotdeck');
+    await act(async () => finishUpload({ ok: true, body: { files: files.map(file => ({ name: file.name, size: file.size })), errors: [] } }));
+    expect(screen.getByRole('status').textContent).toContain('fileTree.uploadStatus.completed');
+  });
+
+  it('preserves a failure and retry after visiting both dedicated routes', async () => {
+    let fail!: (reason: unknown) => void;
+    mocks.upload.mockImplementationOnce(() => new Promise((_resolve, reject) => { fail = reject; }))
+      .mockImplementationOnce((_project, _form, { signal }) => new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+      }));
+    await startShellUpload();
+    await waitFor(() => expect(mocks.upload).toHaveBeenCalledOnce());
+    fireEvent.click(screen.getByRole('button', { name: 'Go to skills' }));
+    await screen.findByTestId('skills-page');
+    await act(async () => fail(new Error('UPLOAD_NETWORK_ERROR')));
+    fireEvent.click(screen.getByRole('button', { name: 'Go to scheduled tasks' }));
+    await screen.findByTestId('cron-page');
+    fireEvent.click(screen.getByRole('button', { name: 'Back to workspace' }));
+    await openExplorer();
+    fireEvent.click(await screen.findByRole('button', { name: 'fileTree.uploadStatus.retry' }));
+    await waitFor(() => expect(mocks.upload).toHaveBeenCalledTimes(2));
+    fireEvent.click(screen.getByRole('button', { name: 'fileTree.uploadStatus.cancel' }));
+    await waitFor(() => expect(mocks.upload.mock.calls[1][2].signal.aborted).toBe(true));
+  });
+
+  it('shows saved and conflicted files separately when a collision happens after preflight', async () => {
+    mocks.upload.mockImplementation(async (_project, form) => {
+      const [saved] = form.getAll('files') as File[];
+      return { ok: true, body: { files: [{ name: saved.name, size: saved.size }], errors: [{ name: 'b.txt', code: 'UPLOAD_FILE_EXISTS' }] } };
+    });
+    await startShellUpload([new File(['a'], 'a.txt'), new File(['b'], 'b.txt')]);
+    expect(await screen.findByRole('status')).toHaveProperty('textContent', 'fileTree.uploadStatus.failed');
+    expect(screen.getByRole('alert').textContent).toContain('fileTree.uploadStatus.partial');
+    fireEvent.click(screen.getByText('fileTree.uploadStatus.details'));
+    const rows = screen.getAllByRole('listitem');
+    expect(rows.some(row => row.textContent === 'a.txtfileTree.uploadStatus.saved')).toBe(true);
+    expect(rows.some(row => row.textContent === 'b.txtfileTree.uploadStatus.fileExists')).toBe(true);
+    expect(screen.queryByRole('button', { name: 'fileTree.uploadStatus.retry' })).toBeNull();
+  });
 });
 
 describe('workspace uploads across panel visibility changes', () => {

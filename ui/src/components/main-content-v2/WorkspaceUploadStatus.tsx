@@ -8,7 +8,7 @@ export function WorkspaceUploadStatus({ upload, onCancel, onRetry, onDismiss }: 
   const { t } = useTranslation();
   if (!upload) return null;
   const { stage, files, percent, savedNames, failures } = upload;
-  if (stage === 'failed' && upload.errorCode === 'UPLOAD_FILE_EXISTS') {
+  if (stage === 'failed' && upload.errorCode === 'UPLOAD_FILE_EXISTS' && savedNames.length === 0) {
     return (
       <section className="workspace-upload" data-stage={stage} aria-label={t('fileTree.uploadStatus.label')}>
         <div className="workspace-upload-heading">
