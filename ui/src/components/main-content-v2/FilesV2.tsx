@@ -39,11 +39,12 @@ import {
   readExternalFileDropTarget,
   resolveExternalFileDropTargetPath,
 } from '../../utils/externalFileDrop';
-import { useWorkspaceUpload } from './useWorkspaceUpload';
+import type { WorkspaceUploadController } from './useWorkspaceUpload';
 import { WorkspaceUploadStatus } from './WorkspaceUploadStatus';
 
 type FilesV2Props = {
   selectedProject: Project | null;
+  workspaceUpload: WorkspaceUploadController;
   onFileOpen?: (filePath: string) => void;
   activeFilePath?: string | null;
   onFileRename?: (oldPath: string, newPath: string) => void;
@@ -115,6 +116,7 @@ function flatten(
 
 export default function FilesV2({
   selectedProject,
+  workspaceUpload,
   onFileOpen,
   activeFilePath,
   onFileRename,
@@ -131,7 +133,6 @@ export default function FilesV2({
   const [activePath, setActivePath] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<FileContextMenu | null>(null);
   const [inlineEdit, setInlineEdit] = useState<InlineEdit | null>(null);
-  const workspaceUpload = useWorkspaceUpload(selectedProject?.name, refreshFiles);
   const uploadingProject = workspaceUpload.busy;
   const startWorkspaceUpload = workspaceUpload.start;
   const [downloadingProject, setDownloadingProject] = useState(false);
@@ -142,6 +143,11 @@ export default function FilesV2({
   const escapePressedRef = useRef(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const folderInputRef = useRef<HTMLInputElement | null>(null);
+
+  const savedNames = workspaceUpload.upload?.savedNames;
+  useEffect(() => {
+    if (savedNames?.length) refreshFiles();
+  }, [savedNames, refreshFiles]);
 
   useEffect(() => {
     setExpanded(new Set());

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import type { ComponentProps, ReactNode } from 'react';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppTab, Project } from '../../../types/app';
 import MainContent from './MainContent';
@@ -8,6 +8,17 @@ import MainContent from './MainContent';
 const mocks = vi.hoisted(() => ({
   handleFileOpen: vi.fn(),
   onMisroutedFileUrlHandled: vi.fn(),
+  getFiles: vi.fn(),
+  upload: vi.fn(),
+}));
+
+vi.mock('../../../utils/api', () => ({
+  api: {
+    getFiles: mocks.getFiles,
+    uploadLimits: async () => ({ ok: true, json: async () => ({ maxFiles: 500, maxFileBytes: 1024 ** 3, maxTaskBytes: 2 * 1024 ** 3 }) }),
+    checkWorkspaceUpload: async () => ({ ok: true, json: async () => ({ success: true }) }),
+    uploadFiles: mocks.upload,
+  },
 }));
 
 vi.mock('../../../contexts/TaskMasterContext', () => ({
@@ -86,10 +97,6 @@ vi.mock('../../chat-v2/ChatInterfaceV2', () => ({
   ),
 }));
 
-vi.mock('../../main-content-v2/FilesV2', () => ({
-  default: () => <div data-testid="files-explorer" />,
-}));
-
 vi.mock('../../plugins/view/PluginTabContent', () => ({
   default: () => null,
 }));
@@ -143,6 +150,74 @@ beforeEach(() => {
   localStorage.clear();
   mocks.handleFileOpen.mockReset();
   mocks.onMisroutedFileUrlHandled.mockReset();
+  mocks.getFiles.mockReset().mockResolvedValue({ ok: true, json: async () => [] });
+  mocks.upload.mockReset();
+});
+
+describe('workspace uploads across panel visibility changes', () => {
+  async function startUpload() {
+    const view = render(<MainContent {...propsFor('files')} />);
+    const toggle = await screen.findByRole('button', { name: /filesWorkbench\.fileDirectory|^Files$/ });
+    if (toggle.getAttribute('aria-pressed') !== 'true') fireEvent.click(toggle);
+    await waitFor(() => expect(view.container.querySelector('input[type="file"]')).not.toBeNull());
+    const file = new File(['upload contents'], 'large.txt');
+    fireEvent.change(view.container.querySelector('input[type="file"]')!, { target: { files: [file] } });
+    await waitFor(() => expect(mocks.upload).toHaveBeenCalledOnce());
+    return { ...view, file, toggle, options: mocks.upload.mock.calls[0][2] };
+  }
+
+  it.each(['chat', 'collapse'] as const)('continues uploading when hiding the explorer via %s', async (hide) => {
+    let finish!: (value: unknown) => void;
+    mocks.upload.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    const { rerender, file, toggle, options } = await startUpload();
+    if (hide === 'chat') rerender(<MainContent {...propsFor('chat')} />);
+    else fireEvent.click(toggle);
+    expect(screen.queryByRole('progressbar')).toBeNull();
+    expect(options.signal.aborted).toBe(false);
+
+    act(() => options.onProgress(45));
+    if (hide === 'chat') {
+      rerender(<MainContent {...propsFor('files')} />);
+      fireEvent.click(screen.getByRole('button', { name: /filesWorkbench\.fileDirectory|^Files$/ }));
+    } else fireEvent.click(toggle);
+    expect(await screen.findByRole('progressbar')).toHaveProperty('ariaValueNow', '45');
+    expect(mocks.upload).toHaveBeenCalledOnce();
+
+    const readsBeforeSave = mocks.getFiles.mock.calls.length;
+    await act(async () => finish({ ok: true, body: { files: [{ name: file.name, size: file.size }], errors: [] } }));
+    expect(screen.getByRole('status').textContent).toContain('fileTree.uploadStatus.completed');
+    await waitFor(() => expect(mocks.getFiles.mock.calls.length).toBeGreaterThan(readsBeforeSave));
+  });
+
+  it('shows completion and refreshed files when the upload finishes while the explorer is hidden', async () => {
+    let finish!: (value: unknown) => void;
+    mocks.upload.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    const { toggle, file, options } = await startUpload();
+    fireEvent.click(toggle);
+    expect(options.signal.aborted).toBe(false);
+    mocks.getFiles.mockResolvedValue({ ok: true, json: async () => [{ name: file.name, path: `/workspace/PilotDeck/${file.name}`, type: 'file' }] });
+    await act(async () => finish({ ok: true, body: { files: [{ name: file.name, size: file.size }], errors: [] } }));
+    fireEvent.click(toggle);
+    expect(await screen.findByRole('status')).toHaveProperty('textContent', 'fileTree.uploadStatus.completed');
+    await waitFor(() => expect(screen.getAllByText(file.name).length).toBeGreaterThan(1));
+  });
+
+  it('keeps failures and retry available after reopening the explorer, and still supports explicit cancellation', async () => {
+    let fail!: (reason: unknown) => void;
+    mocks.upload.mockImplementationOnce(() => new Promise((_resolve, reject) => { fail = reject; }))
+      .mockImplementationOnce((_project, _form, { signal }) => new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+      }));
+    const { toggle } = await startUpload();
+    fireEvent.click(toggle);
+    await act(async () => fail(new Error('UPLOAD_NETWORK_ERROR')));
+    fireEvent.click(toggle);
+    fireEvent.click(await screen.findByRole('button', { name: 'fileTree.uploadStatus.retry' }));
+    await waitFor(() => expect(mocks.upload).toHaveBeenCalledTimes(2));
+    fireEvent.click(screen.getByRole('button', { name: 'fileTree.uploadStatus.cancel' }));
+    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('fileTree.uploadStatus.cancelled'));
+    expect(mocks.upload.mock.calls[1][2].signal.aborted).toBe(true);
+  });
 });
 
 afterEach(() => {

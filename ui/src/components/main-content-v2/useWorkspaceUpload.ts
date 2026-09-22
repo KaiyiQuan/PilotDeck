@@ -25,7 +25,9 @@ export function formatUploadBytes(bytes: number): string {
   return `${(bytes / divisor).toFixed(1)} ${unit}`;
 }
 
-export function useWorkspaceUpload(projectName: string | undefined, refreshFiles: () => void) {
+export type WorkspaceUploadController = ReturnType<typeof useWorkspaceUpload>;
+
+export function useWorkspaceUpload(projectName: string | undefined, onFilesSaved?: () => void) {
   const { t } = useTranslation();
   const [upload, setUpload] = useState<WorkspaceUpload | null>(null);
   const active = useRef<AbortController | null>(null);
@@ -119,7 +121,7 @@ export function useWorkspaceUpload(projectName: string | undefined, refreshFiles
         errorCode: failedFiles.length > 0 && failedFiles.every(file => failureFor(file)?.code === 'UPLOAD_FILE_EXISTS') ? 'UPLOAD_FILE_EXISTS' : undefined,
         error: failedFiles.length ? (files.length === 1 ? failures[0].message
           : t('fileTree.uploadStatus.partial', { failed: failedFiles.length, saved: savedNames.length })) : undefined });
-      if (savedNames.length) refreshFiles();
+      if (savedNames.length) onFilesSaved?.();
     } catch (error) {
       if (!current()) return;
       if (controller.signal.aborted) {
@@ -134,7 +136,7 @@ export function useWorkspaceUpload(projectName: string | undefined, refreshFiles
     } finally {
       if (active.current === controller) active.current = null;
     }
-  }, [projectName, refreshFiles, t]);
+  }, [projectName, onFilesSaved, t]);
 
   return {
     upload,

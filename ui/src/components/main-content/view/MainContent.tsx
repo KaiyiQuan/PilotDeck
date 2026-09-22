@@ -37,6 +37,7 @@ import MainContentStateView from "./subcomponents/MainContentStateView";
 import ConversationSwitcher from "./subcomponents/ConversationSwitcher";
 import ErrorBoundary from "./ErrorBoundary";
 import ToolSidePanel from "./subcomponents/ToolSidePanel";
+import { useWorkspaceUpload, type WorkspaceUploadController } from "../../main-content-v2/useWorkspaceUpload";
 
 const AlwaysOnV2 = React.lazy(() => import("../../main-content-v2/AlwaysOnV2"));
 const CronV2 = React.lazy(() => import("../../main-content-v2/CronV2"));
@@ -253,6 +254,8 @@ function MainContent({
   const { tasksEnabled, isTaskMasterInstalled } =
     useTasksSettings() as TasksSettingsContextValue;
   const [toast, setToast] = useState<MainContentToast>(null);
+  // Uploads belong to the project, independently of the explorer's visibility.
+  const workspaceUpload = useWorkspaceUpload(selectedProject?.name);
 
   const shouldShowTasksTab = Boolean(tasksEnabled && isTaskMasterInstalled);
 
@@ -531,6 +534,7 @@ function MainContent({
     <div className="relative flex h-full min-h-0 flex-col bg-white text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100">
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <SplitBody
+          workspaceUpload={workspaceUpload}
           projects={projects}
           selectedProject={selectedProject}
           selectedSession={selectedSession}
@@ -613,6 +617,7 @@ function MainContent({
 // V2 split body: chat is the persistent primary surface, Files is a dedicated
 // workbench, and the management dashboards open in a resizable side panel.
 type SplitBodyProps = {
+  workspaceUpload: WorkspaceUploadController;
   projects: Project[];
   selectedProject: Project | null;
   selectedSession: ProjectSession | null;
@@ -675,6 +680,7 @@ type SplitBodyProps = {
 function SplitBody(props: SplitBodyProps) {
   const { t } = useTranslation();
   const {
+    workspaceUpload,
     projects,
     selectedProject,
     selectedSession,
@@ -1251,6 +1257,7 @@ function SplitBody(props: SplitBodyProps) {
             <FilesV2
               key={selectedProject?.name ?? ""}
               selectedProject={selectedProject}
+              workspaceUpload={workspaceUpload}
               onFileOpen={handleFileOpen}
               activeFilePath={activeFilePath}
               onFileRename={onFileRename}
@@ -1353,6 +1360,7 @@ function SplitBody(props: SplitBodyProps) {
               <FilesV2
                 key={selectedProject?.name ?? ""}
                 selectedProject={selectedProject}
+                workspaceUpload={workspaceUpload}
                 onFileOpen={handleFileOpen}
                 activeFilePath={activeFilePath}
                 onFileRename={onFileRename}
