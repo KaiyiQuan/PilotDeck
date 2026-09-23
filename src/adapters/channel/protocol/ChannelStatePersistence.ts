@@ -32,12 +32,15 @@ export class ChannelStatePersistence {
     // save(new) + immediate load/replace, routing the next message to the
     // previous session/project. Prefer the in-memory dirty value; if a write
     // is already in flight (dirty drained, rename not finished yet), wait for
-    // it so the replacement sees the latest durable snapshot.
-    if (this.dirty.has(channelKey)) {
-      return this.dirty.get(channelKey) as T;
-    }
-    const inFlight = this.inFlight.get(channelKey);
-    if (inFlight) {
+    // it, then re-check dirty in case a newer save landed while we waited.
+    for (;;) {
+      if (this.dirty.has(channelKey)) {
+        return this.dirty.get(channelKey) as T;
+      }
+      const inFlight = this.inFlight.get(channelKey);
+      if (!inFlight) {
+        break;
+      }
       await inFlight;
     }
     const filePath = this.filePath(channelKey);
