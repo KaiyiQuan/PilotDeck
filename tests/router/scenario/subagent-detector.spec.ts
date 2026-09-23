@@ -8,7 +8,7 @@ function userMessage(text: string): CanonicalMessage {
   return { role: "user", content: [{ type: "text", text }] };
 }
 
-const AGENT_TOOL: CanonicalToolSchema[] = [{ name: "agent", description: "", parameters: { type: "object", properties: {} } }];
+const AGENT_TOOL: CanonicalToolSchema[] = [{ name: "agent", description: "", inputSchema: {} }];
 
 test("detectSubagent: matching tag family yields a model hint", () => {
   const messages = [userMessage("Use <ccr-subagent-model>claude-sonnet-4</ccr-subagent-model> for this.")];
