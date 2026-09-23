@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { CanonicalMessage, CanonicalToolSchema } from "../../src/model/index.js";
-import { detectSubagent, stripSubagentTagFromMessages } from "../../src/router/scenario/subagentDetector.js";
+import type { CanonicalMessage, CanonicalToolSchema } from "../../../src/model/index.js";
+import { detectSubagent, stripSubagentTagFromMessages } from "../../../src/router/scenario/subagentDetector.js";
 
 function userMessage(text: string): CanonicalMessage {
   return { role: "user", content: [{ type: "text", text }] };
