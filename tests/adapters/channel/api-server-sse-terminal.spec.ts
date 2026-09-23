@@ -5,6 +5,9 @@ import { Readable } from "node:stream";
 
 import { ApiServerChannel } from "../../../src/adapters/channel/api-server/ApiServerChannel.js";
 import type { GatewayEvent } from "../../../src/gateway/protocol/types.js";
+import type { ChannelHandle } from "../../../src/adapters/channel/protocol/types.js";
+
+const NOOP_LOGGER = { error() {}, info() {}, warn() {} };
 
 function fakeReq(body: object, headers: Record<string, string> = {}): IncomingMessage {
   const stream = Readable.from([Buffer.from(JSON.stringify(body))]);
@@ -30,12 +33,21 @@ function fakeRes(): { res: ServerResponse; chunks: string[] } {
   return { res, chunks };
 }
 
-test("SSE error path emits the OpenAI terminal markers (finish chunk + [DONE])", async () => {
+async function startChannel(gateway: { submitTurn(): AsyncIterable<GatewayEvent> }): Promise<{
+  channel: ApiServerChannel;
+  stop: ChannelHandle["stop"];
+}> {
   const channel = new ApiServerChannel({
+    port: 0, // ephemeral port so tests never collide on the default listener
     mapper: {
       resolve: () => ({ sessionKey: "sk-test", message: "hi" }),
     } as never,
   });
+  const handle = await channel.start({ gateway: gateway as never, logger: NOOP_LOGGER } as never);
+  return { channel, stop: handle.stop };
+}
+
+test("SSE error path emits the OpenAI terminal markers (finish chunk + [DONE])", async () => {
   // Gateway that throws mid-stream, after the request was accepted.
   const failingGateway = {
     submitTurn(): AsyncIterable<GatewayEvent> {
@@ -45,25 +57,23 @@ test("SSE error path emits the OpenAI terminal markers (finish chunk + [DONE])",
       })();
       return gen;
     },
-  } as never;
-  await channel.start({ gateway: failingGateway, logger: { error() {}, info() {}, warn() {} } } as never);
+  };
+  const { channel, stop } = await startChannel(failingGateway);
+  try {
+    const req = fakeReq({ stream: true, messages: [{ role: "user", content: "hi" }] });
+    const { res, chunks } = fakeRes();
+    await (channel as unknown as { handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> }).handleRequest(req, res);
 
-  const req = fakeReq({ stream: true, messages: [{ role: "user", content: "hi" }] });
-  const { res, chunks } = fakeRes();
-  await (channel as unknown as { handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> }).handleRequest(req, res);
-
-  const joined = chunks.join("");
-  assert.match(joined, /channel_submit_failed/);
-  assert.match(joined, /"finish_reason":"stop"/);
-  assert.match(joined, /data: \[DONE\]/);
+    const joined = chunks.join("");
+    assert.match(joined, /channel_submit_failed/);
+    assert.match(joined, /"finish_reason":"stop"/);
+    assert.match(joined, /data: \[DONE\]/);
+  } finally {
+    await stop("test teardown");
+  }
 });
 
 test("SSE success path emits the OpenAI terminal markers", async () => {
-  const channel = new ApiServerChannel({
-    mapper: {
-      resolve: () => ({ sessionKey: "sk-test", message: "hi" }),
-    } as never,
-  });
   const okGateway = {
     submitTurn(): AsyncIterable<GatewayEvent> {
       const gen = (async function* () {
@@ -72,15 +82,18 @@ test("SSE success path emits the OpenAI terminal markers", async () => {
       })();
       return gen;
     },
-  } as never;
-  await channel.start({ gateway: okGateway, logger: { error() {}, info() {}, warn() {} } } as never);
+  };
+  const { channel, stop } = await startChannel(okGateway);
+  try {
+    const req = fakeReq({ stream: true, messages: [{ role: "user", content: "hi" }] });
+    const { res, chunks } = fakeRes();
+    await (channel as unknown as { handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> }).handleRequest(req, res);
 
-  const req = fakeReq({ stream: true, messages: [{ role: "user", content: "hi" }] });
-  const { res, chunks } = fakeRes();
-  await (channel as unknown as { handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> }).handleRequest(req, res);
-
-  const joined = chunks.join("");
-  assert.match(joined, /"content":"hello"/);
-  assert.match(joined, /"finish_reason":"stop"/);
-  assert.match(joined, /data: \[DONE\]/);
+    const joined = chunks.join("");
+    assert.match(joined, /"content":"hello"/);
+    assert.match(joined, /"finish_reason":"stop"/);
+    assert.match(joined, /data: \[DONE\]/);
+  } finally {
+    await stop("test teardown");
+  }
 });
